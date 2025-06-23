@@ -29,6 +29,7 @@ cfg_not_test_util! {
 
 cfg_test_util! {
     use crate::time::{Duration, Instant};
+    use crate::runtime::time::MAX_SAFE_MILLIS_DURATION;
     use crate::loom::sync::Mutex;
     use crate::loom::sync::atomic::Ordering;
     use std::sync::atomic::AtomicBool as StdAtomicBool;
@@ -319,5 +320,35 @@ cfg_test_util! {
 
             Instant::from_std(ret)
         }
+
+        pub(crate) fn now_tick(&self) -> u64 {
+            self.instant_to_tick(self.now())
+        }
+
+        pub(crate) fn deadline_to_tick(&self, t: Instant) -> u64 {
+            // Round up to the end of a ms
+            self.instant_to_tick(t + Duration::from_nanos(999_999))
+        }
+
+        pub(crate) fn instant_to_tick(&self, t: Instant) -> u64 {
+            // round up
+            let dur: Duration = t.saturating_duration_since(self.start_time.into());
+            let ms = dur
+                .as_millis()
+                .try_into()
+                .unwrap_or(MAX_SAFE_MILLIS_DURATION);
+            ms.min(MAX_SAFE_MILLIS_DURATION)
+        }
+
+        pub(crate) fn tick_to_duration(&self, t: u64) -> Duration {
+            Duration::from_millis(t)
+        }
+
+        #[cfg(test)]
+        #[allow(dead_code)]
+        pub(super) fn start_time(&self) -> Instant {
+            Instant::from_std(self.start_time)
+        }
+
     }
 }
