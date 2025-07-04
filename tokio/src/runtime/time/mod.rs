@@ -17,6 +17,7 @@ mod source;
 pub(crate) use source::TimeSource;
 
 mod wheel;
+pub(crate) use wheel::Wheel;
 
 use crate::loom::sync::atomic::{AtomicBool, Ordering};
 use crate::loom::sync::Mutex;
