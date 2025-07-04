@@ -806,6 +806,29 @@ impl Context {
             self.defer.defer(waker);
         }
     }
+
+    fn with_core<F, R>(&self, f: F) -> R
+    where
+        F: FnOnce(Option<&mut Core>) -> R,
+    {
+        match self.core.borrow_mut().as_mut() {
+            Some(core) => f(Some(core)),
+            None => f(None),
+        }
+    }
+
+    pub(crate) fn with_wheel<F, R>(&self, f: F) -> R
+    where
+        F: FnOnce(Option<(&mut Wheel, mpsc::Sender<TimerShared>)>) -> R,
+    {
+        self.with_core(|core| {
+            if let Some(core) = core {
+                f(Some((&mut core.wheel, core.cancel_tx.clone())))
+            } else {
+                f(None)
+            }
+        })
+    }
 }
 
 impl Core {
