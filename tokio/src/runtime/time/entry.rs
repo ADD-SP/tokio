@@ -58,12 +58,15 @@ use crate::loom::cell::UnsafeCell;
 use crate::loom::sync::atomic::AtomicU64;
 use crate::loom::sync::atomic::Ordering;
 
+use crate::runtime::context;
 use crate::runtime::scheduler;
+use crate::runtime::time::Wheel;
 use crate::sync::AtomicWaker;
 use crate::time::Instant;
 use crate::util::linked_list;
 
 use pin_project_lite::pin_project;
+use std::sync::mpsc;
 use std::task::{Context, Poll, Waker};
 use std::{marker::PhantomPinned, pin::Pin, ptr::NonNull};
 
@@ -684,4 +687,19 @@ impl TimerHandle {
     pub(super) unsafe fn fire(self, completed_state: TimerResult) -> Option<Waker> {
         self.inner.as_ref().state.fire(completed_state)
     }
+}
+
+fn with_current_wheel<F, R>(f: F) -> R
+where
+    F: FnOnce(Option<(&mut Wheel, mpsc::Sender<TimerShared>)>) -> R,
+{
+    use crate::runtime::scheduler::Context::{CurrentThread, MultiThread};
+
+    context::with_scheduler(|maybe_cx| {
+        match maybe_cx {
+            Some(CurrentThread(cx)) => todo!("NYI"),
+            Some(MultiThread(cx)) => cx.with_wheel(f),
+            None => f(None),
+        }
+    })
 }
