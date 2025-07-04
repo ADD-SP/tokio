@@ -63,6 +63,7 @@ use crate::runtime::scheduler::multi_thread::{
 };
 use crate::runtime::scheduler::{inject, Defer, Lock};
 use crate::runtime::task::OwnedTasks;
+use crate::runtime::time::{TimerShared, Wheel};
 use crate::runtime::{blocking, driver, scheduler, task, Config, SchedulerMetrics, WorkerMetrics};
 use crate::runtime::{context, TaskHooks};
 use crate::task::coop;
@@ -73,6 +74,7 @@ use std::cell::RefCell;
 use std::task::Waker;
 use std::thread;
 use std::time::Duration;
+use std::sync::mpsc;
 
 mod metrics;
 
@@ -114,6 +116,12 @@ struct Core {
 
     /// The worker-local run queue.
     run_queue: queue::Local<Arc<Handle>>,
+
+    wheel: Wheel,
+
+    cancel_tx: mpsc::Sender<TimerShared>,
+
+    cancel_rx: mpsc::Receiver<TimerShared>,
 
     /// True if the worker is currently searching for more work. Searching
     /// involves attempting to steal from other workers.
@@ -254,12 +262,17 @@ pub(super) fn create(
         let unpark = park.unpark();
         let metrics = WorkerMetrics::from_config(&config);
         let stats = Stats::new(&metrics);
+        let wheel = Wheel::new();
+        let (cancel_tx, cancel_rx) = mpsc::channel();
 
         cores.push(Box::new(Core {
             tick: 0,
             lifo_slot: None,
             lifo_enabled: !config.disable_lifo_slot,
             run_queue,
+            wheel,
+            cancel_tx,
+            cancel_rx,
             is_searching: false,
             is_shutdown: false,
             is_traced: false,
