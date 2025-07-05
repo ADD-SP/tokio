@@ -254,6 +254,8 @@ impl Sleep {
         let entry = Timer::new(deadline);
         #[cfg(all(tokio_unstable, feature = "tracing"))]
         let inner = {
+            use crate::runtime::scheduler;
+
             let handle = scheduler::Handle::current();
             let clock = handle.driver().clock();
             let handle = &handle.driver().time();
@@ -366,8 +368,12 @@ impl Sleep {
                 tracing::trace_span!("runtime.resource.async_op.poll");
 
             let duration = {
-                let clock = me.entry.clock();
-                let time_source = me.entry.driver().time_source();
+                use crate::runtime::scheduler;
+
+                let handle = scheduler::Handle::current();
+                let clock = handle.driver().clock();
+                let handle = &handle.driver().time();
+                let time_source = handle.time_source();
                 let now = time_source.now(clock);
                 let deadline_tick = time_source.deadline_to_tick(deadline);
                 deadline_tick.saturating_sub(now)
