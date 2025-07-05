@@ -1,10 +1,10 @@
 use super::wheel::EntryHandle;
 use crate::{
-    runtime::{context, time::{wheel::Entry, Wheel}},
+    runtime::{context, time::{wheel::entry, Wheel}},
     time::Instant,
 };
 use std::{
-    mem::ManuallyDrop, pin::Pin, sync::mpsc, task::{Context, Poll}
+    pin::Pin, sync::mpsc, task::{Context, Poll}
 };
 
 pub(crate) struct Timer {
@@ -25,6 +25,12 @@ impl std::fmt::Debug for Timer {
     }
 }
 
+impl Drop for Timer {
+    fn drop(&mut self) {
+        Pin::new(self).cancel();
+    }
+}
+
 impl Timer {
     pub(crate) fn new(deadline: Instant) -> Self {
         Timer {
@@ -33,7 +39,15 @@ impl Timer {
         }
     }
 
-    fn register(self: Pin<&mut Self>) {
+    pub(crate) fn deadline(&self) -> Instant {
+        self.deadline
+    }
+
+    pub(crate) fn is_elapsed(&self) -> bool {
+        self.entry.as_ref().map_or(false, |entry| entry.is_elapsed())
+    }
+
+    fn register(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
         use crate::runtime::scheduler;
 
         let this = self.get_mut();
@@ -41,30 +55,35 @@ impl Timer {
         with_current_wheel(|maybe_wheel| {
             let when = scheduler::Handle::current().driver().time().time_source().instant_to_tick(this.deadline);
             if let Some((wheel, tx)) = maybe_wheel {
-                let entry = Entry::new(when, Some(tx));
-                let hdl = entry.handle();
-                unsafe {
-                    wheel.insert(entry)
-                };
-                this.entry = Some(hdl);
+                let hdl = entry::new(when, cx.waker(), Some(tx));
+                if unsafe { wheel.insert(hdl.clone()) } {
+                    this.entry = Some(hdl);
+                    Poll::Pending
+                } else {
+                    Poll::Ready(())
+                }
             } else {
-                let entry = ManuallyDrop::new(Entry::new(when, None));
-                push_inject(entry.handle());
+                let hdl = entry::new(when, cx.waker(), None);
+                push_inject(hdl);
+                Poll::Pending
             }
-        });
+        })
     }
 
     pub(crate) fn poll_elapsed(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
         match self.entry.as_ref() {
-            Some(entry) if entry.elapsed() => Poll::Ready(()),
+            Some(entry) if entry.is_elapsed() => Poll::Ready(()),
             Some(entry) => {
                 entry.register_waker(cx.waker());
                 Poll::Pending
             }
-            None => {
-                self.register();
-                Poll::Pending
-            }
+            None => self.register(cx),
+        }
+    }
+
+    pub(crate) fn cancel(self: Pin<&mut Self>) {
+        if let Some(entry) = self.get_mut().entry.take() {
+            entry.cancel();
         }
     }
 }
@@ -89,4 +108,8 @@ fn push_inject(hdl: EntryHandle) {
         CurrentThread(sched_hdl) => sched_hdl.push_remote_timer(hdl),
         MultiThread(sched_hdl) => sched_hdl.push_remote_timer(hdl),
     }).unwrap();
+}
+
+fn instant_to_tick(instant: Instant) -> u64 {
+    crate::runtime::scheduler::Handle::current().driver().time().time_source().instant_to_tick(instant)
 }

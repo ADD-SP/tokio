@@ -1,11 +1,13 @@
+use std::sync::Arc;
 use std::{ptr::NonNull, task::Waker, sync::mpsc};
 use crate::{sync::AtomicWaker, util::linked_list};
-use crate::loom::sync::atomic::{AtomicU64, Ordering};
+use crate::loom::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 pub(crate) type EntryList = linked_list::LinkedList<Entry, Entry>;
 
 pub(crate) const STATE_PENDING: u64 = u64::MAX;
-pub(crate) const MAX_SAFE_MILLIS_DURATION: u64 = STATE_PENDING - 1;
+pub(crate) const STATE_CANCELLED: u64 = STATE_PENDING - 1;
+pub(crate) const MAX_SAFE_MILLIS_DURATION: u64 = STATE_CANCELLED - 1;
 
 pub(crate) struct Entry {
     /// Intrusive list pointers.
@@ -17,6 +19,8 @@ pub(crate) struct Entry {
 
     /// The currently-registered waker.
     waker: AtomicWaker,
+
+    handle: Handle,
 }
 
 generate_addr_of_methods! {
@@ -36,9 +40,7 @@ unsafe impl linked_list::Link for Entry {
     }
 
     unsafe fn from_raw(ptr: NonNull<Self::Target>) -> Self::Handle {
-        Handle {
-            entry: ptr,
-        }
+        ptr.as_ref().handle.clone()
     }
 
     unsafe fn pointers(
@@ -49,23 +51,12 @@ unsafe impl linked_list::Link for Entry {
 }
 
 impl Entry {
-    pub(crate) fn new(when: u64, cancel_tx: Option<mpsc::Sender<Handle>>) -> Self {
-        Entry {
-            pointers: linked_list::Pointers::new(),
-            registered_when: AtomicU64::new(when),
-            cancel_tx,
-            waker: AtomicWaker::new(),
-        }
-    }
-
     pub(crate) fn register_waker(&self, waker: &Waker) {
         self.waker.register_by_ref(waker);
     }
 
-    pub(crate) fn handle(&self) -> Handle {
-        Handle {
-            entry: NonNull::from(self),
-        }
+    pub(crate) fn handle(&self) -> &Handle {
+        &self.handle
     }
 
     pub(crate) fn registered_when(&self) -> u64 {
@@ -98,55 +89,96 @@ impl Entry {
     pub(crate) fn fire(&self) {
         self.waker.wake();
     }
+
+    pub(crate) fn is_elapsed(&self) -> bool {
+        self.registered_when.fetch_add(0, Ordering::Relaxed) == STATE_PENDING
+    }
+
+    pub(crate) fn is_cancelled(&self) -> bool {
+        self.registered_when.fetch_add(0, Ordering::Relaxed) == STATE_CANCELLED
+    }
+
+    pub(crate) fn is_pending(&self) -> bool {
+        self.registered_when.fetch_add(0, Ordering::Relaxed) == STATE_PENDING
+    }
+
+    pub(crate) fn cancel(&self) {
+        if let Some(tx) = self.cancel_tx.as_ref() {
+            tx.send(self.handle().clone()).expect("Failed to send cancel message");
+            let old = self.registered_when.swap(STATE_CANCELLED, Ordering::Relaxed);
+            assert_ne!(old, STATE_CANCELLED, "Entry already cancelled");
+        }
+    }
 }
 
 pub(crate) struct Handle {
+    refs: Arc<AtomicUsize>,
     entry: NonNull<Entry>,
 }
 
-unsafe impl Send for Handle {}
-unsafe impl Sync for Handle {}
-
-impl Handle {
-    /// # Safety
-    ///
-    /// The caller must ensure that the associated `Entry` is not
-    /// deallocated.
-    pub(crate) fn register_waker(&self, waker: &Waker) {
-        unsafe { self.entry.as_ref().register_waker(waker) }
+impl Clone for Handle {
+    fn clone(&self) -> Self {
+        self.refs.fetch_add(1, Ordering::Relaxed);
+        Handle {
+            refs: self.refs.clone(),
+            entry: self.entry,
+        }
     }
+}
 
-    /// # Safety
-    ///
-    /// The caller must ensure that the associated `Entry` is not
-    /// deallocated.
-    pub(crate) unsafe fn registered_when(&self) -> u64 {
-        unsafe { self.entry.as_ref().registered_when() }
+impl Drop for Handle {
+    fn drop(&mut self) {
+        // `refs == 2` means this is the last handle except another one
+        // in the entry itself.
+        if self.refs.fetch_sub(1, Ordering::Release) == 2 {
+            unsafe {
+                std::ptr::drop_in_place(self.entry.as_ptr());
+            }
+        }
     }
+}
 
-    /// # Safety
-    ///
-    /// The caller must ensure that the associated `Entry` is not
-    /// deallocated.
-    pub(crate) unsafe fn set_registered_when(&self, when: u64) {
-        unsafe { self.entry.as_ref().set_registered_when(when) }
-    }
+impl std::ops::Deref for Handle {
+    type Target = Entry;
 
-    pub(crate) fn elapsed(&self) -> bool {
-        todo!()
-    }
-
-    pub(crate) fn try_mark_pending(&self, not_after: u64) -> Result<(), u64> {
-        unsafe { self.entry.as_ref().try_mark_pending(not_after) }
-    }
-
-    pub(crate) fn fire(&self) {
-        unsafe { self.entry.as_ref().fire() }
+    fn deref(&self) -> &Self::Target {
+        unsafe { self.entry.as_ref() }
     }
 }
 
 impl From<Handle> for NonNull<Entry> {
     fn from(handle: Handle) -> Self {
         handle.entry
+    }
+}
+
+unsafe impl Send for Handle {}
+unsafe impl Sync for Handle {}
+
+pub(crate) fn new(
+    when: u64,
+    waker: &Waker,
+    cancel_tx: Option<mpsc::Sender<Handle>>,
+) -> Handle {
+    let refs = Arc::new(AtomicUsize::new(2));
+
+    let mut entry = Box::new(Entry {
+        pointers: linked_list::Pointers::new(),
+        registered_when: AtomicU64::new(when),
+        cancel_tx,
+        waker: AtomicWaker::new(),
+        handle: Handle {
+            refs: refs.clone(),
+            entry: NonNull::dangling(), // Will be set later
+        },
+    });
+
+    entry.handle.entry = NonNull::from(entry.as_ref());
+    entry.register_waker(waker);
+    let entry_ptr = NonNull::from(Box::leak(entry));
+
+    Handle {
+        refs,
+        entry: entry_ptr,
     }
 }

@@ -1,5 +1,5 @@
-use crate::runtime::time::TimerEntry;
-use crate::time::{error::Error, Duration, Instant};
+use crate::runtime::time::Timer;
+use crate::time::{Duration, Instant};
 use crate::util::trace;
 
 use pin_project_lite::pin_project;
@@ -227,7 +227,7 @@ pin_project! {
 
         // The link between the `Sleep` instance and the timer that drives it.
         #[pin]
-        entry: TimerEntry,
+        entry: Timer,
     }
 }
 
@@ -251,9 +251,7 @@ impl Sleep {
         deadline: Instant,
         location: Option<&'static Location<'static>>,
     ) -> Sleep {
-        use crate::runtime::scheduler;
-        let handle = scheduler::Handle::current();
-        let entry = TimerEntry::new(handle, deadline);
+        let entry = Timer::new(deadline);
         #[cfg(all(tokio_unstable, feature = "tracing"))]
         let inner = {
             let handle = scheduler::Handle::current();
@@ -352,22 +350,10 @@ impl Sleep {
         self.reset_inner(deadline);
     }
 
-    /// Resets the `Sleep` instance to a new deadline without reregistering it
-    /// to be woken up.
-    ///
-    /// Calling this function allows changing the instant at which the `Sleep`
-    /// future completes without having to create new associated state and
-    /// without having it registered. This is required in e.g. the
-    /// [`crate::time::Interval`] where we want to reset the internal [Sleep]
-    /// without having it wake up the last task that polled it.
-    pub(crate) fn reset_without_reregister(self: Pin<&mut Self>, deadline: Instant) {
-        let mut me = self.project();
-        me.entry.as_mut().reset(deadline, false);
-    }
-
     fn reset_inner(self: Pin<&mut Self>, deadline: Instant) {
         let mut me = self.project();
-        me.entry.as_mut().reset(deadline, true);
+        me.entry.as_mut().cancel();
+        me.entry.set(Timer::new(deadline));
 
         #[cfg(all(tokio_unstable, feature = "tracing"))]
         {
@@ -396,7 +382,7 @@ impl Sleep {
         }
     }
 
-    fn poll_elapsed(self: Pin<&mut Self>, cx: &mut task::Context<'_>) -> Poll<Result<(), Error>> {
+    fn poll_elapsed(self: Pin<&mut Self>, cx: &mut task::Context<'_>) -> Poll<()> {
         let me = self.project();
 
         ready!(crate::trace::trace_leaf(cx));
@@ -443,9 +429,6 @@ impl Future for Sleep {
         let _ao_span = self.inner.ctx.async_op_span.clone().entered();
         #[cfg(all(tokio_unstable, feature = "tracing"))]
         let _ao_poll_span = self.inner.ctx.async_op_poll_span.clone().entered();
-        match ready!(self.as_mut().poll_elapsed(cx)) {
-            Ok(()) => Poll::Ready(()),
-            Err(e) => panic!("timer error: {e}"),
-        }
+        self.as_mut().poll_elapsed(cx)
     }
 }

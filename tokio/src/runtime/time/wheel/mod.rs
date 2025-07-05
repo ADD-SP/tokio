@@ -1,13 +1,11 @@
-use crate::time::{error::InsertError, Instant};
-
 mod level;
 pub(crate) use self::level::Expiration;
 use self::level::Level;
 
-mod entry;
-pub(crate) use self::entry::{Entry, EntryList, Handle as EntryHandle, STATE_PENDING, MAX_SAFE_MILLIS_DURATION};
+pub(crate) mod entry;
+pub(crate) use self::entry::{EntryList, Handle as EntryHandle, STATE_PENDING, MAX_SAFE_MILLIS_DURATION};
 
-use std::{array, mem::ManuallyDrop};
+use std::array;
 
 /// Timing wheel implementation.
 ///
@@ -86,18 +84,17 @@ impl Wheel {
     /// This function registers item into an intrusive linked list. The caller
     /// must ensure that `item` is pinned and will not be dropped without first
     /// being deregistered.
-    pub(crate) unsafe fn insert(&mut self, entry: Entry) {
-        let hdl = entry.handle();
+    pub(crate) unsafe fn insert(&mut self, hdl: EntryHandle) -> bool {
         let when = hdl.registered_when();
 
         if when <= self.elapsed {
-            self.pending.push_front(hdl);
-            return;
+            return false;
         }
 
         // Get the level at which the entry should be stored
         let level = self.level_for(when);
 
+        hdl.set_registered_when(when);
         unsafe {
             self.levels[level].add_entry(hdl);
         }
@@ -108,6 +105,8 @@ impl Wheel {
                 .map(|e| e.deadline >= self.elapsed)
                 .unwrap_or(true)
         });
+
+        true
     }
 
     /// Removes `item` from the timing wheel.
