@@ -293,8 +293,11 @@ fn shutdown2(mut core: Box<Core>, handle: &Handle) -> Box<Core> {
     handle.shared.owned.close_and_shutdown_all(0);
 
     let rt_handle = &handle.driver;
-    let time_handle = rt_handle.time();
-    time_handle.shutdown(&mut core.wheel);
+    rt_handle.with_time(|time_handle| {
+        if let Some(time_handle) = time_handle {
+            time_handle.shutdown(&mut core.wheel);
+        }
+    });
 
     // Drain local queue
     // We already shut down every task, so we just need to drop the task.
@@ -435,25 +438,45 @@ impl Context {
         core.submit_metrics(handle);
 
         let rt_handle = &self.handle.driver;
-        let time_handle = rt_handle.time();
-        let timeout = core.wheel.next_expiration_time();
-        let timeout = match timeout {
-            Some(timeout) => {
-                let now = time_handle.time_source().now(rt_handle.clock());
-                time_handle.time_source().tick_to_duration(timeout.saturating_sub(now))
+        let timeout = rt_handle.with_time(|time_hdl| {
+            let mut inject_timers: Vec<EntryHandle> = {
+                let mut lock = handle.shared.inject_timer.lock();
+                std::mem::take(&mut lock)
+            };
+
+            inject_timers.drain(..).for_each(|entry| {
+                if unsafe { core.wheel.insert(entry.clone()) } {
+                    entry.fire();
+                }
+            });
+
+            match time_hdl {
+                Some(time_hdl) => {
+                    match core.wheel.next_expiration_time() {
+                        Some(timeout) => {
+                            let now = time_hdl.time_source().now(rt_handle.clock());
+                            time_hdl.time_source().tick_to_duration(timeout.saturating_sub(now))
+                        }
+                        None => Duration::from_millis(0),
+                    }
+                }
+                None => Duration::from_millis(0),
             }
-            None => Duration::from_millis(0),
-        };
+        });
 
         let (mut core, ()) = self.enter(core, || {
             driver.park_timeout(&handle.driver, timeout);
             self.defer.wake();
         });
 
-        while let Some(entry) = core.cancel_rx.try_recv().ok() {
-            unsafe { core.wheel.remove(entry) }
-        }
-        time_handle.process(rt_handle, &mut core.wheel);
+        rt_handle.with_time(|time_handle| {
+            if let Some(time_handle) = time_handle {
+                while let Some(entry) = core.cancel_rx.try_recv().ok() {
+                    unsafe { core.wheel.remove(entry) }
+                }
+                time_handle.process(rt_handle, &mut core.wheel);
+            }
+        });
 
         core.driver = Some(driver);
         core

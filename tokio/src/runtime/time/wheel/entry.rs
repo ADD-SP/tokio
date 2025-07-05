@@ -55,6 +55,11 @@ impl Entry {
         self.waker.register_by_ref(waker);
     }
 
+    pub(crate) fn set_cancel_tx(&mut self, cancel_tx: mpsc::Sender<Handle>) {
+        let old = self.cancel_tx.replace(cancel_tx);
+        assert!(old.is_none(), "Entry already has a cancel channel");
+    }
+
     pub(crate) fn handle(&self) -> &Handle {
         &self.handle
     }

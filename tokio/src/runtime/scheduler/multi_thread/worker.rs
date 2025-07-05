@@ -578,8 +578,11 @@ impl Context {
         }
 
         let rt_handle = &self.worker.handle.driver;
-        let time_handle = rt_handle.time();
-        time_handle.shutdown(&mut core.wheel);
+        rt_handle.with_time(|time_handle| {
+            if let Some(time_handle) = time_handle {
+                time_handle.shutdown(&mut core.wheel);
+            }
+        });
 
         core.pre_shutdown(&self.worker);
         // Signal shutdown
@@ -778,25 +781,41 @@ impl Context {
         self.assert_lifo_enabled_is_correct(&core);
 
         let rt_handle = &self.worker.handle.driver;
-        let time_handle = rt_handle.time();
-        let duration = match (core.wheel.next_expiration_time(), duration) {
-            (Some(timeout), None) => {
-                let now = time_handle.time_source().now(&rt_handle.clock());
-                Some(time_handle.time_source().tick_to_duration(timeout.saturating_sub(now)))
-            }
-            (None, Some(timeout)) => Some(timeout),
-            (None, None) => None,
-            (Some(t1), Some(t2)) => {
-                let now = time_handle.time_source().now(&rt_handle.clock());
-                let t1 = time_handle.time_source().tick_to_duration(t1.saturating_sub(now));
-                let t2 = t2.min(t1);
-                if t2.is_zero() {
-                    None
-                } else {
-                    Some(t2)
+        let duration = rt_handle.with_time(|time_handle| {
+            let Some(time_handle) = time_handle else {
+                // If there is no time handle, then we cannot use the timer wheel.
+                return duration;
+            };
+
+            let mut inject_timers = {
+                let mut lock = self.worker.handle.shared.synced.lock();
+                std::mem::take(&mut lock.inject_timer)
+            };
+
+            inject_timers.drain(..).for_each(|entry| {
+                // Cancel the timer entry
+                unsafe { core.wheel.remove(entry) };
+            });
+
+            match (core.wheel.next_expiration_time(), duration) {
+                (Some(timeout), None) => {
+                    let now = time_handle.time_source().now(&rt_handle.clock());
+                    Some(time_handle.time_source().tick_to_duration(timeout.saturating_sub(now)))
+                }
+                (None, Some(timeout)) => Some(timeout),
+                (None, None) => None,
+                (Some(t1), Some(t2)) => {
+                    let now = time_handle.time_source().now(&rt_handle.clock());
+                    let t1 = time_handle.time_source().tick_to_duration(t1.saturating_sub(now));
+                    let t2 = t2.min(t1);
+                    if t2.is_zero() {
+                        None
+                    } else {
+                        Some(t2)
+                    }
                 }
             }
-        };
+        });
 
         // Take the parker out of core
         let mut park = core.park.take().expect("park missing");
@@ -819,10 +838,17 @@ impl Context {
         // Place `park` back in `core`
         core.park = Some(park);
 
-        while let Some(entry) = core.cancel_rx.try_recv().ok() {
-            unsafe { core.wheel.remove(entry) }
-        }
-        time_handle.process(rt_handle, &mut core.wheel);
+        rt_handle.with_time(|time_handle| {
+            let Some(time_handle) = time_handle else {
+                // If there is no time handle, then we cannot use the timer wheel.
+                return;
+            };
+
+            while let Some(entry) = core.cancel_rx.try_recv().ok() {
+                unsafe { core.wheel.remove(entry) }
+            }
+            time_handle.process(rt_handle, &mut core.wheel);
+        });
 
         if core.should_notify_others() {
             self.worker.handle.notify_parked_local();
