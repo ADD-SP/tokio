@@ -17,6 +17,14 @@ pub(crate) struct Timer {
     deadline: Instant,
 }
 
+impl std::fmt::Debug for Timer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Timer")
+            .field("deadline", &self.deadline)
+            .finish()
+    }
+}
+
 impl Timer {
     pub(crate) fn new(deadline: Instant) -> Self {
         Timer {
