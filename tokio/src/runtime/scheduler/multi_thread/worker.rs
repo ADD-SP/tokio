@@ -63,7 +63,7 @@ use crate::runtime::scheduler::multi_thread::{
 };
 use crate::runtime::scheduler::{inject, Defer, Lock};
 use crate::runtime::task::OwnedTasks;
-use crate::runtime::time::{TimerShared, Wheel};
+use crate::runtime::time::{EntryHandle, Wheel};
 use crate::runtime::{blocking, driver, scheduler, task, Config, SchedulerMetrics, WorkerMetrics};
 use crate::runtime::{context, TaskHooks};
 use crate::task::coop;
@@ -72,7 +72,7 @@ use crate::util::rand::{FastRand, RngSeedGenerator};
 
 use std::cell::RefCell;
 use std::task::Waker;
-use std::thread;
+use std::{thread, vec};
 use std::time::Duration;
 use std::sync::mpsc;
 
@@ -119,9 +119,9 @@ struct Core {
 
     wheel: Wheel,
 
-    cancel_tx: mpsc::Sender<TimerShared>,
+    cancel_tx: mpsc::Sender<EntryHandle>,
 
-    cancel_rx: mpsc::Receiver<TimerShared>,
+    cancel_rx: mpsc::Receiver<EntryHandle>,
 
     /// True if the worker is currently searching for more work. Searching
     /// involves attempting to steal from other workers.
@@ -201,6 +201,9 @@ pub(crate) struct Synced {
 
     /// Synchronized state for `Inject`.
     pub(crate) inject: inject::Synced,
+
+    /// Synchronized state for `InjectTimer`.
+    pub(crate) inject_timer: Vec<EntryHandle>,
 }
 
 /// Used to communicate with a worker from other threads.
@@ -300,6 +303,7 @@ pub(super) fn create(
             synced: Mutex::new(Synced {
                 idle: idle_synced,
                 inject: inject_synced,
+                inject_timer: vec![],
             }),
             shutdown_cores: Mutex::new(vec![]),
             trace_status: TraceStatus::new(remotes_len),
@@ -819,7 +823,7 @@ impl Context {
 
     pub(crate) fn with_wheel<F, R>(&self, f: F) -> R
     where
-        F: FnOnce(Option<(&mut Wheel, mpsc::Sender<TimerShared>)>) -> R,
+        F: FnOnce(Option<(&mut Wheel, mpsc::Sender<EntryHandle>)>) -> R,
     {
         self.with_core(|core| {
             if let Some(core) = core {
@@ -1165,6 +1169,11 @@ impl Handle {
         unsafe {
             self.shared.inject.push(&mut synced.inject, task);
         }
+    }
+
+    pub(crate) fn push_remote_timer(&self, hdl: EntryHandle) {
+        let mut synced = self.shared.synced.lock();
+        synced.inject_timer.push(hdl);
     }
 
     pub(super) fn close(&self) {

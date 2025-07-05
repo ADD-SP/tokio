@@ -1,13 +1,15 @@
 use crate::loom::sync::atomic::AtomicBool;
-use crate::loom::sync::Arc;
+use crate::loom::sync::{Arc, Mutex};
 use crate::runtime::driver::{self, Driver};
 use crate::runtime::scheduler::{self, Defer, Inject};
 use crate::runtime::task::{
     self, JoinHandle, OwnedTasks, Schedule, SpawnLocation, Task, TaskHarnessScheduleHooks,
 };
+use crate::runtime::time::{EntryHandle, Wheel};
 use crate::runtime::{
     blocking, context, Config, MetricsBatch, SchedulerMetrics, TaskHooks, TaskMeta, WorkerMetrics,
 };
+use std::sync::mpsc;
 use crate::sync::notify::Notify;
 use crate::util::atomic_cell::AtomicCell;
 use crate::util::{waker_ref, RngSeedGenerator, Wake, WakerRef};
@@ -59,6 +61,12 @@ struct Core {
     /// Scheduler run queue
     tasks: VecDeque<Notified>,
 
+    wheel: Wheel,
+
+    cancel_tx: mpsc::Sender<EntryHandle>,
+
+    cancel_rx: mpsc::Receiver<EntryHandle>,
+
     /// Current tick
     tick: u32,
 
@@ -82,6 +90,8 @@ struct Core {
 struct Shared {
     /// Remote run queue
     inject: Inject<Arc<Handle>>,
+
+    inject_timer: Mutex<Vec<EntryHandle>>,
 
     /// Collection of all active tasks spawned onto this executor.
     owned: OwnedTasks<Arc<Handle>>,
@@ -152,6 +162,7 @@ impl CurrentThread {
             },
             shared: Shared {
                 inject: Inject::new(),
+                inject_timer: Mutex::new(vec![]),
                 owned: OwnedTasks::new(1),
                 woken: AtomicBool::new(false),
                 config,
@@ -164,8 +175,14 @@ impl CurrentThread {
             local_tid,
         });
 
+        let wheel = Wheel::new();
+        let (cancel_tx, cancel_rx) = mpsc::channel();
+
         let core = AtomicCell::new(Some(Box::new(Core {
             tasks: VecDeque::with_capacity(INITIAL_CAPACITY),
+            wheel,
+            cancel_tx,
+            cancel_rx,
             tick: 0,
             driver: Some(driver),
             metrics: MetricsBatch::new(&handle.shared.worker_metrics),
@@ -439,6 +456,27 @@ impl Context {
     pub(crate) fn defer(&self, waker: &Waker) {
         self.defer.defer(waker);
     }
+
+    fn with_core<F, R>(&self, f: F) -> R
+    where
+        F: FnOnce(Option<&mut Core>) -> R,
+    {
+        let mut core = self.core.borrow_mut();
+        f(core.as_mut().map(|c| c.as_mut()))
+    }
+
+    pub(crate) fn with_wheel<F, R>(&self, f: F) -> R
+    where
+        F: FnOnce(Option<(&mut Wheel, mpsc::Sender<EntryHandle>)>) -> R,
+    {
+        self.with_core(|maybe_core| {
+            if let Some(core) = maybe_core {
+                f(Some((&mut core.wheel, core.cancel_tx.clone())))
+            } else {
+                f(None)
+            }
+        })
+    }
 }
 
 // ===== impl Handle =====
@@ -583,6 +621,12 @@ impl Handle {
     pub(crate) fn worker_metrics(&self, worker: usize) -> &WorkerMetrics {
         assert_eq!(0, worker);
         &self.shared.worker_metrics
+    }
+
+    pub(crate) fn push_remote_timer(&self, entry: EntryHandle) {
+        // Push the timer entry to the remote queue
+        let mut inject_timer = self.shared.inject_timer.lock();
+        inject_timer.push(entry);
     }
 }
 

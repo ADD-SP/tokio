@@ -6,10 +6,6 @@
 
 //! Time driver.
 
-mod entry;
-pub(crate) use entry::{TimerEntry, TimerHandle, TimerShared};
-use entry::{EntryList, MAX_SAFE_MILLIS_DURATION};
-
 mod handle;
 pub(crate) use self::handle::Handle;
 
@@ -17,12 +13,13 @@ mod source;
 pub(crate) use source::TimeSource;
 
 mod wheel;
-pub(crate) use wheel::Wheel;
+pub(crate) use wheel::{Wheel, EntryHandle};
+
+mod timer;
 
 use crate::loom::sync::atomic::{AtomicBool, Ordering};
 use crate::loom::sync::Mutex;
 use crate::runtime::driver::{self, IoHandle, IoStack};
-use crate::time::error::Error;
 use crate::time::{Clock, Duration};
 use crate::util::WakeList;
 
@@ -269,8 +266,6 @@ impl Handle {
         }
 
         while let Some(entry) = lock.wheel.poll(now) {
-            debug_assert!(unsafe { entry.is_pending() });
-
             // SAFETY: We hold the driver lock, and just removed the entry from any linked lists.
             if let Some(waker) = unsafe { entry.fire(Ok(())) } {
                 waker_list.push(waker);

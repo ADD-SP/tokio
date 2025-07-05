@@ -1,14 +1,13 @@
-use crate::runtime::time::{TimerHandle, TimerShared};
-use crate::time::error::InsertError;
+use crate::time::{error::InsertError, Instant};
 
 mod level;
 pub(crate) use self::level::Expiration;
 use self::level::Level;
 
-use std::{array, ptr::NonNull};
+mod entry;
+pub(crate) use self::entry::{Entry, EntryList, Handle as EntryHandle, STATE_PENDING, MAX_SAFE_MILLIS_DURATION};
 
-use super::entry::STATE_DEREGISTERED;
-use super::EntryList;
+use std::{array, mem::ManuallyDrop};
 
 /// Timing wheel implementation.
 ///
@@ -87,21 +86,20 @@ impl Wheel {
     /// This function registers item into an intrusive linked list. The caller
     /// must ensure that `item` is pinned and will not be dropped without first
     /// being deregistered.
-    pub(crate) unsafe fn insert(
-        &mut self,
-        item: TimerHandle,
-    ) -> Result<u64, (TimerHandle, InsertError)> {
-        let when = item.sync_when();
+    pub(crate) unsafe fn insert(&mut self, entry: Entry) {
+        let hdl = entry.handle();
+        let when = hdl.registered_when();
 
         if when <= self.elapsed {
-            return Err((item, InsertError::Elapsed));
+            self.pending.push_front(hdl);
+            return;
         }
 
         // Get the level at which the entry should be stored
         let level = self.level_for(when);
 
         unsafe {
-            self.levels[level].add_entry(item);
+            self.levels[level].add_entry(hdl);
         }
 
         debug_assert!({
@@ -110,16 +108,14 @@ impl Wheel {
                 .map(|e| e.deadline >= self.elapsed)
                 .unwrap_or(true)
         });
-
-        Ok(when)
     }
 
     /// Removes `item` from the timing wheel.
-    pub(crate) unsafe fn remove(&mut self, item: NonNull<TimerShared>) {
+    pub(crate) unsafe fn remove(&mut self, hdl: EntryHandle) {
         unsafe {
-            let when = item.as_ref().registered_when();
-            if when == STATE_DEREGISTERED {
-                self.pending.remove(item);
+            let when = hdl.registered_when();
+            if when == STATE_PENDING {
+                self.pending.remove(hdl.into());
             } else {
                 debug_assert!(
                     self.elapsed <= when,
@@ -129,7 +125,7 @@ impl Wheel {
                 );
 
                 let level = self.level_for(when);
-                self.levels[level].remove_entry(item);
+                self.levels[level].remove_entry(hdl);
             }
         }
     }
@@ -140,7 +136,7 @@ impl Wheel {
     }
 
     /// Advances the timer up to the instant represented by `now`.
-    pub(crate) fn poll(&mut self, now: u64) -> Option<TimerHandle> {
+    pub(crate) fn poll(&mut self, now: u64) -> Option<EntryHandle> {
         loop {
             if let Some(handle) = self.pending.pop_back() {
                 return Some(handle);
@@ -236,7 +232,7 @@ impl Wheel {
 
             // Try to expire the entry; this is cheap (doesn't synchronize) if
             // the timer is not expired, and updates registered_when.
-            match unsafe { item.mark_pending(expiration.deadline) } {
+            match unsafe { item.try_mark_pending(expiration.deadline) } {
                 Ok(()) => {
                     // Item was expired
                     self.pending.push_front(item);
