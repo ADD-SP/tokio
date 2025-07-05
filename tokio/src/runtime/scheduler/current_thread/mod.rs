@@ -5,7 +5,7 @@ use crate::runtime::scheduler::{self, Defer, Inject};
 use crate::runtime::task::{
     self, JoinHandle, OwnedTasks, Schedule, SpawnLocation, Task, TaskHarnessScheduleHooks,
 };
-use crate::runtime::time::{EntryHandle, Wheel};
+use crate::runtime::time::{self, EntryHandle, Wheel};
 use crate::runtime::{
     blocking, context, Config, MetricsBatch, SchedulerMetrics, TaskHooks, TaskMeta, WorkerMetrics,
 };
@@ -292,6 +292,10 @@ fn shutdown2(mut core: Box<Core>, handle: &Handle) -> Box<Core> {
     // call returns.
     handle.shared.owned.close_and_shutdown_all(0);
 
+    let rt_handle = &handle.driver;
+    let time_handle = rt_handle.time();
+    time_handle.shutdown(&mut core.wheel);
+
     // Drain local queue
     // We already shut down every task, so we just need to drop the task.
     while let Some(task) = core.next_local_task(handle) {
@@ -430,10 +434,26 @@ impl Context {
 
         core.submit_metrics(handle);
 
+        let rt_handle = &self.handle.driver;
+        let time_handle = rt_handle.time();
+        let timeout = core.wheel.next_expiration_time();
+        let timeout = match timeout {
+            Some(timeout) => {
+                let now = time_handle.time_source().now(rt_handle.clock());
+                time_handle.time_source().tick_to_duration(timeout.saturating_sub(now))
+            }
+            None => Duration::from_millis(0),
+        };
+
         let (mut core, ()) = self.enter(core, || {
-            driver.park_timeout(&handle.driver, Duration::from_millis(0));
+            driver.park_timeout(&handle.driver, timeout);
             self.defer.wake();
         });
+
+        while let Some(entry) = core.cancel_rx.try_recv().ok() {
+            unsafe { core.wheel.remove(entry) }
+        }
+        time_handle.process(rt_handle, &mut core.wheel);
 
         core.driver = Some(driver);
         core
