@@ -397,6 +397,43 @@ impl Context {
     /// Blocks the current thread until an event is received by the driver,
     /// including I/O events, timer events, ...
     fn park(&self, mut core: Box<Core>, handle: &Handle) -> Box<Core> {
+        let rt_handle = &self.handle.driver;
+        let timeout = rt_handle.with_time(|time_hdl| {
+            let Some(time_hdl) = time_hdl else {
+                // If no time handle is available, we cannot process timers.
+                // eprintln!("no time handle available, cannot process timers");
+                return None;
+            };
+
+            // eprintln!("Processing inject timers...");
+            let mut inject_timers: Vec<EntryHandle> = {
+                let mut lock = handle.shared.inject_timer.lock();
+                std::mem::take(&mut lock)
+            };
+
+            inject_timers.drain(..).for_each(|entry| {
+                if unsafe { core.wheel.insert(entry.clone()) } {
+                    // entry.set_cancel_tx(core.cancel_tx.clone());
+                } else {
+                    entry.fire();
+                }
+            });
+
+            match core.wheel.next_expiration_time() {
+                Some(timeout) => {
+                    let now = time_hdl.time_source().now(rt_handle.clock());
+                    // eprintln!("Next expiration time: {:?}", timeout);
+                    Some(time_hdl.time_source().tick_to_duration(timeout.saturating_sub(now)))
+                }
+                None => None,
+            }
+        });
+
+        if timeout.is_some() {
+            // eprintln!("found timers, try yielding instead of parking");
+            return self.park_yield(core, handle);
+        }
+
         let mut driver = core.driver.take().expect("driver missing");
 
         if let Some(f) = &handle.shared.config.before_park {
@@ -433,6 +470,7 @@ impl Context {
 
     /// Checks the driver for new events without blocking the thread.
     fn park_yield(&self, mut core: Box<Core>, handle: &Handle) -> Box<Core> {
+        // eprintln!("park_yield");
         let mut driver = core.driver.take().expect("driver missing");
 
         core.submit_metrics(handle);

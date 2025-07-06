@@ -33,6 +33,7 @@ impl Drop for Timer {
 
 impl Timer {
     pub(crate) fn new(deadline: Instant) -> Self {
+        // dbg!("Creating timer with deadline: {:?}", deadline);
         Timer {
             entry: None,
             deadline,
@@ -58,6 +59,7 @@ impl Timer {
                 let hdl = entry::new(when, cx.waker(), Some(tx));
                 if unsafe { wheel.insert(hdl.clone()) } {
                     this.entry = Some(hdl);
+                    // dbg!("Timer registered with deadline: {:?}", this.deadline);
                     Poll::Pending
                 } else {
                     Poll::Ready(())

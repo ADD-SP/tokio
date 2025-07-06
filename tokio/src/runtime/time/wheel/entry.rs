@@ -1,6 +1,7 @@
 use std::sync::Arc;
 use std::{ptr::NonNull, task::Waker, sync::mpsc};
 use crate::{sync::AtomicWaker, util::linked_list};
+use crate::loom::cell::UnsafeCell;
 use crate::loom::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 pub(crate) type EntryList = linked_list::LinkedList<Entry, Entry>;
@@ -15,7 +16,7 @@ pub(crate) struct Entry {
 
     registered_when: AtomicU64,
 
-    cancel_tx: Option<mpsc::Sender<Handle>>,
+    cancel_tx: UnsafeCell<Option<mpsc::Sender<Handle>>>,
 
     /// The currently-registered waker.
     waker: AtomicWaker,
@@ -55,9 +56,14 @@ impl Entry {
         self.waker.register_by_ref(waker);
     }
 
-    pub(crate) fn set_cancel_tx(&mut self, cancel_tx: mpsc::Sender<Handle>) {
-        let old = self.cancel_tx.replace(cancel_tx);
+    pub(crate) fn set_cancel_tx(&self, cancel_tx: mpsc::Sender<Handle>) {
+        let _ = self.registered_when.fetch_add(0, Ordering::Acquire);
+        let old = self.cancel_tx.with_mut(|tx| {
+            let tx = unsafe { tx.as_mut() }.unwrap();
+            tx.replace(cancel_tx)
+        });
         assert!(old.is_none(), "Entry already has a cancel channel");
+        let _ = self.registered_when.fetch_add(0, Ordering::Release);
     }
 
     pub(crate) fn handle(&self) -> &Handle {
@@ -108,11 +114,15 @@ impl Entry {
     }
 
     pub(crate) fn cancel(&self) {
-        if let Some(tx) = self.cancel_tx.as_ref() {
-            tx.send(self.handle().clone()).expect("Failed to send cancel message");
-            let old = self.registered_when.swap(STATE_CANCELLED, Ordering::Relaxed);
-            assert_ne!(old, STATE_CANCELLED, "Entry already cancelled");
-        }
+        let _ = self.registered_when.fetch_add(0, Ordering::Acquire);
+        self.cancel_tx.with_mut(|tx| {
+            let tx = unsafe { tx.as_mut() }.unwrap();
+            if let Some(tx) = tx.take() {
+                // If we have a cancel channel, send the handle to it.
+                tx.send(self.handle().clone()).expect("Failed to send cancel message");
+            }
+        });
+        let _ = self.registered_when.fetch_add(0, Ordering::Release);
     }
 }
 
@@ -170,7 +180,7 @@ pub(crate) fn new(
     let mut entry = Box::new(Entry {
         pointers: linked_list::Pointers::new(),
         registered_when: AtomicU64::new(when),
-        cancel_tx,
+        cancel_tx: UnsafeCell::new(cancel_tx),
         waker: AtomicWaker::new(),
         handle: Handle {
             refs: refs.clone(),

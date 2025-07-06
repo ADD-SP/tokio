@@ -793,8 +793,10 @@ impl Context {
             };
 
             inject_timers.drain(..).for_each(|entry| {
-                // Cancel the timer entry
-                unsafe { core.wheel.remove(entry) };
+                if unsafe { core.wheel.insert(entry.clone()) } {
+                } else {
+                    entry.fire();
+                }
             });
 
             match (core.wheel.next_expiration_time(), duration) {
