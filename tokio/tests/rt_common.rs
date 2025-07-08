@@ -482,7 +482,7 @@ rt_test! {
             time::sleep(dur).await;
         });
 
-        assert!(now.elapsed() >= dur);
+        assert!(now.elapsed() >= dur, "{} >= {}", now.elapsed().as_millis(), dur.as_millis());
     }
 
     #[test]
@@ -503,7 +503,7 @@ rt_test! {
             assert_ok!(rx.await);
         });
 
-        assert!(now.elapsed() >= dur);
+        assert!(now.elapsed() >= dur, "{} >= {}", now.elapsed().as_millis(), dur.as_millis());
     }
 
     #[cfg(not(target_os="wasi"))] // Wasi does not support bind
@@ -576,7 +576,7 @@ rt_test! {
                     tokio::time::sleep(dur).await;
                 });
 
-                assert!(now.elapsed() >= dur);
+                assert!(now.elapsed() >= dur, "{} >= {}", now.elapsed().as_millis(), dur.as_millis());
             }).await);
         });
     }

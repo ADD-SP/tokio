@@ -304,6 +304,7 @@ impl AtomicWaker {
         if let Some(waker) = self.take_waker() {
             // If wake panics, we've consumed the waker which is a legitimate
             // outcome.
+            eprintln!("waking task");
             waker.wake();
         }
     }

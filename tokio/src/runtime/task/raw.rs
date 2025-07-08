@@ -329,6 +329,7 @@ unsafe fn schedule<S: Schedule>(ptr: NonNull<Header>) {
     use crate::runtime::task::{Notified, Task};
 
     let scheduler = Header::get_scheduler::<S>(ptr);
+    eprintln!("vtable::schedule");
     scheduler
         .as_ref()
         .schedule(Notified(Task::from_raw(ptr.cast())));

@@ -98,6 +98,7 @@ impl Entry {
     }
 
     pub(crate) fn fire(&self) {
+        self.registered_when.store(STATE_PENDING, Ordering::Relaxed);
         self.waker.wake();
     }
 

@@ -109,7 +109,9 @@ impl Inner {
         }
 
         loop {
+            eprintln!("parking thread");
             m = self.condvar.wait(m).unwrap();
+            eprintln!("thread woke up");
 
             if self
                 .state

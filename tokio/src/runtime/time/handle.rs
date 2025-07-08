@@ -36,12 +36,13 @@ impl Handle {
         }
 
         while let Some(entry) = wheel.poll(now) {
+            eprintln!("Firing timer");
             entry.fire();
         }
     }
 
     pub(crate) fn shutdown(&self, wheel: &mut Wheel) {
-        self.is_shutdown.store(true, Ordering::SeqCst);
+        // self.is_shutdown.store(true, Ordering::SeqCst);
         // Advance time forward to the end of time.
         // This will ensure that all timers are fired.
         let max_tick = u64::MAX;

@@ -413,7 +413,7 @@ impl Context {
 
             inject_timers.drain(..).for_each(|entry| {
                 if unsafe { core.wheel.insert(entry.clone()) } {
-                    // entry.set_cancel_tx(core.cancel_tx.clone());
+                    entry.set_cancel_tx(core.cancel_tx.clone());
                 } else {
                     entry.fire();
                 }
@@ -433,6 +433,8 @@ impl Context {
             // eprintln!("found timers, try yielding instead of parking");
             return self.park_yield(core, handle);
         }
+
+        // eprintln!("park forever");
 
         let mut driver = core.driver.take().expect("driver missing");
 
@@ -484,6 +486,7 @@ impl Context {
 
             inject_timers.drain(..).for_each(|entry| {
                 if unsafe { core.wheel.insert(entry.clone()) } {
+                    // TODO: requires context.core is Some
                     entry.fire();
                 }
             });
@@ -502,10 +505,15 @@ impl Context {
             }
         });
 
+        // eprintln!("park_yield with timeout: {:?}", timeout);
+
         let (mut core, ()) = self.enter(core, || {
             driver.park_timeout(&handle.driver, timeout);
             self.defer.wake();
+
         });
+
+        // eprintln!("park_yield woken up");
 
         rt_handle.with_time(|time_handle| {
             if let Some(time_handle) = time_handle {
@@ -515,7 +523,6 @@ impl Context {
                 time_handle.process(rt_handle, &mut core.wheel);
             }
         });
-
         core.driver = Some(driver);
         core
     }
@@ -708,6 +715,7 @@ impl Handle {
         // Push the timer entry to the remote queue
         let mut inject_timer = self.shared.inject_timer.lock();
         inject_timer.push(entry);
+        self.driver.unpark();
     }
 }
 
@@ -775,6 +783,13 @@ impl Schedule for Arc<Handle> {
                 // to schedule the task.
                 if let Some(core) = core.as_mut() {
                     core.push_task(self, task);
+                } else {
+                    // Track that a task was scheduled from **outside** of the runtime.
+                    self.shared.scheduler_metrics.inc_remote_schedule_count();
+
+                    // Schedule the task
+                    self.shared.inject.push(task);
+                    self.driver.unpark();
                 }
             }
             _ => {

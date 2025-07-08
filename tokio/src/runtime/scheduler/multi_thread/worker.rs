@@ -1151,18 +1151,24 @@ impl Worker {
 
 impl Handle {
     pub(super) fn schedule_task(&self, task: Notified, is_yield: bool) {
+        eprintln!("schedule_task: start");
         with_current(|maybe_cx| {
+            eprintln!("schedule_task");
             if let Some(cx) = maybe_cx {
+                eprintln!("schedule_task: Some(cx)");
                 // Make sure the task is part of the **current** scheduler.
                 if self.ptr_eq(&cx.worker.handle) {
+                    eprintln!("schedule_task: self.ptr_eq");
                     // And the current thread still holds a core
                     if let Some(core) = cx.core.borrow_mut().as_mut() {
+                        eprintln!("schedule_task: Some(core)");
                         self.schedule_local(core, task, is_yield);
                         return;
                     }
                 }
             }
 
+            eprintln!("schedule_task: else");
             // Otherwise, use the inject queue.
             self.push_remote_task(task);
             self.notify_parked_remote();
@@ -1230,8 +1236,13 @@ impl Handle {
     }
 
     pub(crate) fn push_remote_timer(&self, hdl: EntryHandle) {
-        let mut synced = self.shared.synced.lock();
-        synced.inject_timer.push(hdl);
+        eprintln!("try lock inject timer");
+        {
+            let mut synced = self.shared.synced.lock();
+            synced.inject_timer.push(hdl);
+        }
+        self.notify_parked_remote();
+        eprintln!("pushed into inject and unparked remote worker");
     }
 
     pub(super) fn close(&self) {

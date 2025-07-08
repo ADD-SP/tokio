@@ -54,18 +54,21 @@ impl Timer {
         let this = self.get_mut();
 
         with_current_wheel(|maybe_wheel| {
-            let when = scheduler::Handle::current().driver().time().time_source().instant_to_tick(this.deadline);
+            let when = scheduler::Handle::current().driver().time().time_source().deadline_to_tick(this.deadline);
             if let Some((wheel, tx)) = maybe_wheel {
                 let hdl = entry::new(when, cx.waker(), Some(tx));
                 if unsafe { wheel.insert(hdl.clone()) } {
                     this.entry = Some(hdl);
-                    // dbg!("Timer registered with deadline: {:?}", this.deadline);
+                    eprintln!("timer registered");
                     Poll::Pending
                 } else {
+                    eprintln!("timer is already expired, then fired immediately");
                     Poll::Ready(())
                 }
             } else {
                 let hdl = entry::new(when, cx.waker(), None);
+                this.entry = Some(hdl.clone());
+                eprintln!("timer push in inject");
                 push_inject(hdl);
                 Poll::Pending
             }

@@ -67,7 +67,7 @@ impl RawTask {
     /// passed to this call.
     pub(super) fn wake_by_val(&self) {
         use super::state::TransitionToNotifiedByVal;
-
+        eprintln!("wake_by_val");
         match self.state().transition_to_notified_by_val() {
             TransitionToNotifiedByVal::Submit => {
                 // The caller has given us a ref-count, and the transition has
@@ -95,6 +95,7 @@ impl RawTask {
     /// submit it if necessary.
     pub(super) fn wake_by_ref(&self) {
         use super::state::TransitionToNotifiedByRef;
+        eprintln!("wake_by_ref");
 
         match self.state().transition_to_notified_by_ref() {
             TransitionToNotifiedByRef::Submit => {
