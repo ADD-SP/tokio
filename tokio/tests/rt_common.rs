@@ -622,6 +622,7 @@ rt_test! {
                 rt.block_on(async move {
                     rx2.await.unwrap();
                     time::sleep(Duration::from_millis(5)).await;
+                    eprintln!("A");
                     tx1.send(()).unwrap();
                 });
         });
@@ -630,8 +631,10 @@ rt_test! {
             rt2.block_on(async move {
                 tx2.send(()).unwrap();
                 time::sleep(Duration::from_millis(5)).await;
+                eprintln!("B");
                 rx1.await.unwrap();
                 time::sleep(Duration::from_millis(5)).await;
+                eprintln!("C");
             });
         });
 

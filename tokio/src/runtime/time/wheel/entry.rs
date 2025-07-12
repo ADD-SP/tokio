@@ -2,21 +2,26 @@ use std::sync::Arc;
 use std::{ptr::NonNull, task::Waker, sync::mpsc};
 use crate::{sync::AtomicWaker, util::linked_list};
 use crate::loom::cell::UnsafeCell;
-use crate::loom::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use crate::loom::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
+use crate::loom::sync::Mutex;
 
 pub(crate) type EntryList = linked_list::LinkedList<Entry, Entry>;
 
-pub(crate) const STATE_PENDING: u64 = u64::MAX;
-pub(crate) const STATE_CANCELLED: u64 = STATE_PENDING - 1;
-pub(crate) const MAX_SAFE_MILLIS_DURATION: u64 = STATE_CANCELLED - 1;
+pub(crate) const STATE_UNREGISTERED: u8 = 0;
+pub(crate) const STATE_REGISTERED: u8 = 1;
+pub(crate) const STATE_PENDING: u8 = 2;
+pub(crate) const STATE_PREMATURE: u8 = 3;
+pub(crate) const MAX_SAFE_MILLIS_DURATION: u64 = u64::MAX - 1;
 
 pub(crate) struct Entry {
     /// Intrusive list pointers.
     pointers: linked_list::Pointers<Entry>,
 
-    registered_when: AtomicU64,
+    state: AtomicU8,
 
-    cancel_tx: UnsafeCell<Option<mpsc::Sender<Handle>>>,
+    when: u64,
+
+    cancel_tx: Mutex<Option<mpsc::Sender<Handle>>>,
 
     /// The currently-registered waker.
     waker: AtomicWaker,
@@ -57,79 +62,82 @@ impl Entry {
     }
 
     pub(crate) fn set_cancel_tx(&self, cancel_tx: mpsc::Sender<Handle>) {
-        let _ = self.registered_when.fetch_add(0, Ordering::Acquire);
-        let old = self.cancel_tx.with_mut(|tx| {
-            let tx = unsafe { tx.as_mut() }.unwrap();
-            tx.replace(cancel_tx)
-        });
-        assert!(old.is_none(), "Entry already has a cancel channel");
-        let _ = self.registered_when.fetch_add(0, Ordering::Release);
+        let mut lock = self.cancel_tx.lock();
+        assert!(lock.is_none(), "Cancel channel already set");
+        *lock = Some(cancel_tx);
     }
 
     pub(crate) fn handle(&self) -> &Handle {
         &self.handle
     }
 
-    pub(crate) fn registered_when(&self) -> u64 {
-        self.registered_when.fetch_add(0, Ordering::Relaxed)
+    pub(crate) fn when(&self) -> u64 {
+        self.when
     }
 
-    pub(crate) fn set_registered_when(&self, when: u64) {
-        self.registered_when.store(when, Ordering::Relaxed);
+    pub(crate) fn transition_to_registered(&self) {
+        let old = self.state.swap(STATE_REGISTERED, Ordering::Relaxed);
+        assert_eq!(old, STATE_UNREGISTERED, "Entry already registered");
     }
 
-    pub(crate) fn try_mark_pending(&self, not_after: u64) -> Result<(), u64> {
-        let mut cur = self.registered_when.load(Ordering::Relaxed);
-        loop {
-            if cur > not_after {
-                return Err(cur);
-            }
-
-            match self.registered_when.compare_exchange_weak(
-                cur,
-                STATE_PENDING,
-                Ordering::Relaxed,
-                Ordering::Relaxed,
-            ) {
-                Ok(_) => return Ok(()),
-                Err(actual) => cur = actual,
-            }
+    pub(crate) fn transition_to_pending(&self, not_after: u64) -> Result<(), u64> {
+        if self.when > not_after {
+            return Err(self.when);
         }
+        let old = self.state.swap(STATE_PENDING, Ordering::Relaxed);
+        assert_eq!(old, STATE_REGISTERED, "Entry not registered");
+        Ok(())
     }
 
     pub(crate) fn fire(&self) {
-        self.registered_when.store(STATE_PENDING, Ordering::Relaxed);
+        let state = self.state.fetch_or(0, Ordering::Relaxed);
+        assert_eq!(state, STATE_PENDING, "Entry not in pending state");
         self.waker.wake();
     }
 
-    pub(crate) fn is_elapsed(&self) -> bool {
-        self.registered_when.fetch_add(0, Ordering::Relaxed) == STATE_PENDING
+    pub(crate) fn fire_unregistered(&self) {
+        // let state = self.state.fetch_or(0, Ordering::Relaxed);
+        // assert_eq!(state, STATE_UNREGISTERED, "Entry not in unregistered state");
+        self.waker.wake();
+        let old = self.state.swap(STATE_PREMATURE, Ordering::Release);
+        assert_eq!(old, STATE_UNREGISTERED, "Entry state changed unexpectedly");
     }
 
-    pub(crate) fn is_cancelled(&self) -> bool {
-        self.registered_when.fetch_add(0, Ordering::Relaxed) == STATE_CANCELLED
+    pub(crate) fn is_elapsed(&self) -> bool {
+        let state = self.state.fetch_or(0, Ordering::Relaxed);
+        state == STATE_PENDING || state == STATE_PREMATURE
+    }
+
+    pub(crate) fn is_registered(&self) -> bool {
+        self.state.fetch_or(0, Ordering::Relaxed) == STATE_REGISTERED
     }
 
     pub(crate) fn is_pending(&self) -> bool {
-        self.registered_when.fetch_add(0, Ordering::Relaxed) == STATE_PENDING
+        self.state.fetch_or(0, Ordering::Relaxed) == STATE_PENDING
+    }
+
+    pub(crate) fn is_premature(&self) -> bool {
+        self.state.fetch_or(0, Ordering::Relaxed) == STATE_PREMATURE
     }
 
     pub(crate) fn cancel(&self) {
-        let _ = self.registered_when.fetch_add(0, Ordering::Acquire);
-        self.cancel_tx.with_mut(|tx| {
-            let tx = unsafe { tx.as_mut() }.unwrap();
-            if let Some(tx) = tx.take() {
-                // If we have a cancel channel, send the handle to it.
-                tx.send(self.handle().clone()).expect("Failed to send cancel message");
+        if self.is_registered() {
+            if let Some(tx) = self.cancel_tx.lock().take() {
+                tx.send(self.handle.clone()).expect("Failed to send cancel message");
             }
-        });
-        let _ = self.registered_when.fetch_add(0, Ordering::Release);
+        }
     }
 }
 
 pub(crate) struct Handle {
     refs: Arc<AtomicUsize>,
     entry: NonNull<Entry>,
+}
+
+impl std::fmt::Display for Handle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Handle({:p}, {})", self.entry.as_ptr(), self.refs.fetch_or(0, Ordering::Relaxed))
+    }
 }
 
 impl Clone for Handle {
@@ -180,8 +188,9 @@ pub(crate) fn new(
 
     let mut entry = Box::new(Entry {
         pointers: linked_list::Pointers::new(),
-        registered_when: AtomicU64::new(when),
-        cancel_tx: UnsafeCell::new(cancel_tx),
+        state: AtomicU8::new(STATE_UNREGISTERED),
+        when,
+        cancel_tx: Mutex::new(cancel_tx),
         waker: AtomicWaker::new(),
         handle: Handle {
             refs: refs.clone(),

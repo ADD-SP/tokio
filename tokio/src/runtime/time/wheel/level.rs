@@ -65,6 +65,7 @@ impl Level {
         // of `now` (`level_range` is a power of 2).
         let level_start = now & !(level_range - 1);
         let mut deadline = level_start + slot as u64 * slot_range;
+        eprintln!("next_expiration: now: {now}, level_start: {level_start}, slot: {slot}, deadline: {deadline}");
 
         if deadline <= now {
             // A timer is in a slot "prior" to the current time. This can occur
@@ -126,11 +127,10 @@ impl Level {
     /// The caller must ensure that the [`entry::Entry`]
     /// associated with `item` is valid.
     pub(crate) unsafe fn add_entry(&mut self, item: entry::Handle) {
-        let registered_when = unsafe { item.registered_when() };
-        let slot = slot_for(registered_when, self.level);
+        let when = unsafe { item.when() };
+        let slot = slot_for(when, self.level);
 
-        self.slot[slot].push_front(item);
-
+        self.slot[slot].push_front(item.clone());
         self.occupied |= occupied_bit(slot);
     }
 
@@ -139,8 +139,9 @@ impl Level {
     /// The caller must ensure that the [`entry::Entry`]
     /// associated with `item` is valid.
     pub(crate) unsafe fn remove_entry(&mut self, item: entry::Handle) {
-        let registered_when = unsafe { item.registered_when() };
-        let slot = slot_for(registered_when, self.level);
+        let when = unsafe { item.when() };
+        let slot = slot_for(when, self.level);
+
 
         unsafe { self.slot[slot].remove(item.into()) };
         if self.slot[slot].is_empty() {

@@ -411,13 +411,20 @@ impl Context {
                 std::mem::take(&mut lock)
             };
 
+            let mut fired = false;
             inject_timers.drain(..).for_each(|entry| {
                 if unsafe { core.wheel.insert(entry.clone()) } {
                     entry.set_cancel_tx(core.cancel_tx.clone());
                 } else {
-                    entry.fire();
+                    fired = true;
+                    entry.fire_unregistered();
                 }
             });
+
+            if fired {
+                // eprintln!("fired inject timers, yielding");
+                return Some(Duration::ZERO);
+            }
 
             match core.wheel.next_expiration_time() {
                 Some(timeout) => {
@@ -484,12 +491,20 @@ impl Context {
                 std::mem::take(&mut lock)
             };
 
+            let mut fired = false;
             inject_timers.drain(..).for_each(|entry| {
                 if unsafe { core.wheel.insert(entry.clone()) } {
-                    // TODO: requires context.core is Some
-                    entry.fire();
+                    entry.set_cancel_tx(core.cancel_tx.clone());
+                } else {
+                    fired = true;
+                    entry.fire_unregistered();
                 }
             });
+
+            if fired {
+                // eprintln!("fired inject timers, yielding");
+                return Duration::ZERO;
+            }
 
             match time_hdl {
                 Some(time_hdl) => {
@@ -505,7 +520,7 @@ impl Context {
             }
         });
 
-        // eprintln!("park_yield with timeout: {:?}", timeout);
+        eprintln!("park_yield with timeout: {:?}", timeout);
 
         let (mut core, ()) = self.enter(core, || {
             driver.park_timeout(&handle.driver, timeout);
@@ -513,12 +528,14 @@ impl Context {
 
         });
 
-        // eprintln!("park_yield woken up");
+        eprintln!("park_yield woken up");
 
         rt_handle.with_time(|time_handle| {
             if let Some(time_handle) = time_handle {
                 while let Some(entry) = core.cancel_rx.try_recv().ok() {
-                    unsafe { core.wheel.remove(entry) }
+                    if !entry.is_pending() && !entry.is_premature() {
+                        unsafe { core.wheel.remove(entry) }
+                    }
                 }
                 time_handle.process(rt_handle, &mut core.wheel);
             }
@@ -713,8 +730,10 @@ impl Handle {
 
     pub(crate) fn push_remote_timer(&self, entry: EntryHandle) {
         // Push the timer entry to the remote queue
-        let mut inject_timer = self.shared.inject_timer.lock();
-        inject_timer.push(entry);
+        {
+            let mut inject_timer = self.shared.inject_timer.lock();
+            inject_timer.push(entry);
+        }
         self.driver.unpark();
     }
 }

@@ -59,6 +59,7 @@ impl Idle {
         // will pair with the `fetch_sub(1)` when transitioning out of
         // searching.
         if !self.notify_should_wakeup() {
+            eprintln!("!self.notify_should_wakeup()");
             return None;
         }
 
@@ -67,6 +68,7 @@ impl Idle {
 
         // Check again, now that the lock is acquired
         if !self.notify_should_wakeup() {
+            eprintln!("!self.notify_should_wakeup() after acquiring lock");
             return None;
         }
 

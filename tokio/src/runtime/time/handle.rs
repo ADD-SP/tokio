@@ -21,10 +21,12 @@ pub(crate) struct Handle {
 impl Handle {
     pub(crate) fn process(&self, rt_handle: &driver::Handle, wheel: &mut Wheel) {
         let now = self.time_source().now(rt_handle.clock());
+        eprintln!("Processing timers at time: {}", now);
         self.process_at_time(wheel, now);
     }
 
-    pub(crate) fn process_at_time(&self, wheel: &mut Wheel, mut now: u64) {
+    fn process_at_time(&self, wheel: &mut Wheel, mut now: u64) {
+        eprintln!("process_at_time: now: {}", now);
         if now < wheel.elapsed() {
             // Time went backwards! This normally shouldn't happen as the Rust language
             // guarantees that an Instant is monotonic, but can happen when running

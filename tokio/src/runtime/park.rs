@@ -85,6 +85,7 @@ impl Inner {
             .compare_exchange(NOTIFIED, EMPTY, SeqCst, SeqCst)
             .is_ok()
         {
+            eprintln!("thread was notified, returning from park immediately");
             return;
         }
 
@@ -102,16 +103,16 @@ impl Inner {
                 // read from the write it made to `state`.
                 let old = self.state.swap(EMPTY, SeqCst);
                 debug_assert_eq!(old, NOTIFIED, "park state changed unexpectedly");
-
+                eprintln!("thread was notified, returning from park immediately");
                 return;
             }
             Err(actual) => panic!("inconsistent park state; actual = {actual}"),
         }
 
         loop {
-            eprintln!("parking thread");
+            eprintln!("inner-pre-parking condvar");
             m = self.condvar.wait(m).unwrap();
-            eprintln!("thread woke up");
+            eprintln!("inner-post-parking condvar");
 
             if self
                 .state

@@ -569,7 +569,8 @@ impl Context {
             } else {
                 // Wait for work
                 core = if !self.defer.is_empty() {
-                    self.park_timeout(core, Some(Duration::from_millis(0)))
+                    self.park_yield(core)
+                    // self.park_timeout(core, Some(Duration::from_millis(0)))
                 } else {
                     self.park(core)
                 };
@@ -725,7 +726,8 @@ impl Context {
 
             // Call `park` with a 0 timeout. This enables the I/O driver, timer, ...
             // to run without actually putting the thread to sleep.
-            core = self.park_timeout(core, Some(Duration::from_millis(0)));
+            // core = self.park_timeout(core, Some(Duration::from_millis(0)));
+            core = self.park_yield(core);
 
             // Run regularly scheduled maintenance
             core.maintenance(&self.worker);
@@ -752,6 +754,7 @@ impl Context {
             f();
         }
 
+
         if core.transition_to_parked(&self.worker) {
             while !core.is_shutdown && !core.is_traced {
                 core.stats.about_to_park();
@@ -768,6 +771,7 @@ impl Context {
                 if core.transition_from_parked(&self.worker) {
                     break;
                 }
+                eprintln!("transitioned from parked, continuing to park");
             }
         }
 
@@ -777,9 +781,12 @@ impl Context {
         core
     }
 
-    fn park_timeout(&self, mut core: Box<Core>, duration: Option<Duration>) -> Box<Core> {
-        self.assert_lifo_enabled_is_correct(&core);
+    fn park_yield(&self, mut core: Box<Core>) -> Box<Core> {
+        core = self.park_timeout(core, Some(Duration::ZERO));
+        core
+    }
 
+    fn park_timeout(&self, mut core: Box<Core>, duration: Option<Duration>) -> Box<Core> {
         let rt_handle = &self.worker.handle.driver;
         let duration = rt_handle.with_time(|time_handle| {
             let Some(time_handle) = time_handle else {
@@ -792,32 +799,37 @@ impl Context {
                 std::mem::take(&mut lock.inject_timer)
             };
 
+            let mut fired = false;
             inject_timers.drain(..).for_each(|entry| {
                 if unsafe { core.wheel.insert(entry.clone()) } {
+                    entry.set_cancel_tx(core.cancel_tx.clone());
                 } else {
-                    entry.fire();
+                    fired = true;
+                    entry.fire_unregistered();
                 }
             });
 
-            match (core.wheel.next_expiration_time(), duration) {
-                (Some(timeout), None) => {
+            if fired {
+                return Some(Duration::ZERO);
+            }
+
+            let timer_dur = match core.wheel.next_expiration_time() {
+                Some(timeout) => {
                     let now = time_handle.time_source().now(&rt_handle.clock());
                     Some(time_handle.time_source().tick_to_duration(timeout.saturating_sub(now)))
                 }
-                (None, Some(timeout)) => Some(timeout),
+                None => None,
+            };
+
+            match (timer_dur, duration) {
+                (Some(t), Some(d)) => Some(t.min(d)),
+                (Some(t), None) => Some(t),
+                (None, Some(d)) => Some(d),
                 (None, None) => None,
-                (Some(t1), Some(t2)) => {
-                    let now = time_handle.time_source().now(&rt_handle.clock());
-                    let t1 = time_handle.time_source().tick_to_duration(t1.saturating_sub(now));
-                    let t2 = t2.min(t1);
-                    if t2.is_zero() {
-                        None
-                    } else {
-                        Some(t2)
-                    }
-                }
             }
         });
+
+        self.assert_lifo_enabled_is_correct(&core);
 
         // Take the parker out of core
         let mut park = core.park.take().expect("park missing");
@@ -827,8 +839,11 @@ impl Context {
 
         // Park thread
         if let Some(timeout) = duration {
+            eprintln!("parking thread with timeout: {:?}", timeout);
             park.park_timeout(&self.worker.handle.driver, timeout);
+            eprintln!("unparked thread");
         } else {
+            eprintln!("parking thread indefinitely");
             park.park(&self.worker.handle.driver);
         }
 
@@ -837,9 +852,6 @@ impl Context {
         // Remove `core` from context
         core = self.core.borrow_mut().take().expect("core missing");
 
-        // Place `park` back in `core`
-        core.park = Some(park);
-
         rt_handle.with_time(|time_handle| {
             let Some(time_handle) = time_handle else {
                 // If there is no time handle, then we cannot use the timer wheel.
@@ -847,10 +859,15 @@ impl Context {
             };
 
             while let Some(entry) = core.cancel_rx.try_recv().ok() {
-                unsafe { core.wheel.remove(entry) }
+                if !entry.is_pending() && !entry.is_premature() {
+                    unsafe { core.wheel.remove(entry) }
+                }
             }
             time_handle.process(rt_handle, &mut core.wheel);
         });
+
+        // Place `park` back in `core`
+        core.park = Some(park);
 
         if core.should_notify_others() {
             self.worker.handle.notify_parked_local();
@@ -917,6 +934,7 @@ impl Core {
             }
 
             if worker.inject().is_empty() {
+                eprintln!("no inject tasks available");
                 return None;
             }
 
@@ -1242,7 +1260,6 @@ impl Handle {
             synced.inject_timer.push(hdl);
         }
         self.notify_parked_remote();
-        eprintln!("pushed into inject and unparked remote worker");
     }
 
     pub(super) fn close(&self) {
@@ -1266,7 +1283,13 @@ impl Handle {
 
     fn notify_parked_remote(&self) {
         if let Some(index) = self.shared.idle.worker_to_notify(&self.shared) {
+            eprintln!("notifying parked remote worker");
             self.shared.remotes[index].unpark.unpark(&self.driver);
+        } else {
+            eprintln!("no parked remote worker to notify");
+            // // If there is no worker to notify, then we can just notify all
+            // // workers. This is a fallback mechanism.
+            // self.notify_all();
         }
     }
 

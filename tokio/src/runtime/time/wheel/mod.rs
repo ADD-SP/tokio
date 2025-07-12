@@ -85,7 +85,7 @@ impl Wheel {
     /// must ensure that `item` is pinned and will not be dropped without first
     /// being deregistered.
     pub(crate) unsafe fn insert(&mut self, hdl: EntryHandle) -> bool {
-        let when = hdl.registered_when();
+        let when = hdl.when();
 
         if when <= self.elapsed {
             return false;
@@ -94,7 +94,7 @@ impl Wheel {
         // Get the level at which the entry should be stored
         let level = self.level_for(when);
 
-        hdl.set_registered_when(when);
+        hdl.transition_to_registered();
         unsafe {
             self.levels[level].add_entry(hdl);
         }
@@ -112,10 +112,10 @@ impl Wheel {
     /// Removes `item` from the timing wheel.
     pub(crate) unsafe fn remove(&mut self, hdl: EntryHandle) {
         unsafe {
-            let when = hdl.registered_when();
-            if when == STATE_PENDING {
+            if hdl.is_pending() {
                 self.pending.remove(hdl.into());
             } else {
+                let when = hdl.when();
                 debug_assert!(
                     self.elapsed <= when,
                     "elapsed={}; when={}",
@@ -129,11 +129,6 @@ impl Wheel {
         }
     }
 
-    /// Instant at which to poll.
-    pub(crate) fn poll_at(&self) -> Option<u64> {
-        self.next_expiration().map(|expiration| expiration.deadline)
-    }
-
     /// Advances the timer up to the instant represented by `now`.
     pub(crate) fn poll(&mut self, now: u64) -> Option<EntryHandle> {
         loop {
@@ -141,10 +136,12 @@ impl Wheel {
                 return Some(handle);
             }
 
+            eprintln!("polling at: {now}, elapsed: {}", self.elapsed);
             match self.next_expiration() {
                 Some(ref expiration) if expiration.deadline <= now => {
                     self.process_expiration(expiration);
 
+                    eprintln!("setting elapsed to: {}", expiration.deadline);
                     self.set_elapsed(expiration.deadline);
                 }
                 _ => {
@@ -152,6 +149,7 @@ impl Wheel {
                     // _and_ we were not able to find a next expiration in
                     // the current list of timers.  advance to the poll's
                     // current time and do nothing else.
+                    eprintln!("None setting elapsed to: {}", now);
                     self.set_elapsed(now);
                     break;
                 }
@@ -165,6 +163,7 @@ impl Wheel {
     fn next_expiration(&self) -> Option<Expiration> {
         if !self.pending.is_empty() {
             // Expire immediately as we have things pending firing
+            eprintln!("expire immediately");
             return Some(Expiration {
                 level: 0,
                 slot: 0,
@@ -226,12 +225,12 @@ impl Wheel {
 
         while let Some(item) = entries.pop_back() {
             if expiration.level == 0 {
-                debug_assert_eq!(unsafe { item.registered_when() }, expiration.deadline);
+                debug_assert_eq!(unsafe { item.when() }, expiration.deadline);
             }
 
             // Try to expire the entry; this is cheap (doesn't synchronize) if
-            // the timer is not expired, and updates registered_when.
-            match unsafe { item.try_mark_pending(expiration.deadline) } {
+            // the timer is not expired, and updates when.
+            match unsafe { item.transition_to_pending(expiration.deadline) } {
                 Ok(()) => {
                     // Item was expired
                     self.pending.push_front(item);
