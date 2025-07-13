@@ -71,9 +71,6 @@ impl Parker {
     }
 
     pub(crate) fn park_timeout(&mut self, handle: &driver::Handle, duration: Duration) {
-        // Only parking with zero is supported...
-        assert_eq!(duration, Duration::from_millis(0));
-
         if let Some(mut driver) = self.inner.shared.driver.try_lock() {
             driver.park_timeout(handle, duration);
         } else {
