@@ -85,7 +85,6 @@ impl Inner {
             .compare_exchange(NOTIFIED, EMPTY, SeqCst, SeqCst)
             .is_ok()
         {
-            eprintln!("thread was notified, returning from park immediately");
             return;
         }
 
@@ -103,16 +102,13 @@ impl Inner {
                 // read from the write it made to `state`.
                 let old = self.state.swap(EMPTY, SeqCst);
                 debug_assert_eq!(old, NOTIFIED, "park state changed unexpectedly");
-                eprintln!("thread was notified, returning from park immediately");
                 return;
             }
             Err(actual) => panic!("inconsistent park state; actual = {actual}"),
         }
 
         loop {
-            eprintln!("inner-pre-parking condvar");
             m = self.condvar.wait(m).unwrap();
-            eprintln!("inner-post-parking condvar");
 
             if self
                 .state
@@ -162,9 +158,7 @@ impl Inner {
         // from a notification, we just want to unconditionally set the state back to
         // empty, either consuming a notification or un-flagging ourselves as
         // parked.
-        eprintln!("inner-pre-parking condvar with timeout: {dur:?}");
         let (_m, _result) = self.condvar.wait_timeout(m, dur).unwrap();
-        eprintln!("inner-post-parking condvar with timeout: {dur:?}");
 
         #[cfg(all(target_family = "wasm", not(target_feature = "atomics")))]
         // Wasm without atomics doesn't have threads, so just sleep.

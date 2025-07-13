@@ -65,7 +65,6 @@ impl Level {
         // of `now` (`level_range` is a power of 2).
         let level_start = now & !(level_range - 1);
         let mut deadline = level_start + slot as u64 * slot_range;
-        // eprintln!("next_expiration: now: {now}, level_start: {level_start}, slot: {slot}, deadline: {deadline}");
 
         if deadline <= now {
             // A timer is in a slot "prior" to the current time. This can occur

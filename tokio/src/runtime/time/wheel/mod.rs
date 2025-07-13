@@ -138,12 +138,10 @@ impl Wheel {
                 return Some(handle);
             }
 
-            // eprintln!("polling at: {now}, elapsed: {}", self.elapsed);
             match self.next_expiration() {
                 Some(ref expiration) if expiration.deadline <= now => {
                     self.process_expiration(expiration);
 
-                    // eprintln!("setting elapsed to: {}", expiration.deadline);
                     self.set_elapsed(expiration.deadline);
                 }
                 _ => {
@@ -151,7 +149,6 @@ impl Wheel {
                     // _and_ we were not able to find a next expiration in
                     // the current list of timers.  advance to the poll's
                     // current time and do nothing else.
-                    // eprintln!("None setting elapsed to: {}", now);
                     self.set_elapsed(now);
                     break;
                 }
@@ -165,7 +162,6 @@ impl Wheel {
     fn next_expiration(&self) -> Option<Expiration> {
         if !self.pending.is_empty() {
             // Expire immediately as we have things pending firing
-            // eprintln!("expire immediately");
             return Some(Expiration {
                 level: 0,
                 slot: 0,

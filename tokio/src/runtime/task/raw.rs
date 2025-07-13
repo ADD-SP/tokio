@@ -329,14 +329,12 @@ unsafe fn schedule<S: Schedule>(ptr: NonNull<Header>) {
     use crate::runtime::task::{Notified, Task};
 
     let scheduler = Header::get_scheduler::<S>(ptr);
-    eprintln!("vtable::schedule::{ptr:?}");
     scheduler
         .as_ref()
         .schedule(Notified(Task::from_raw(ptr.cast())));
 }
 
 unsafe fn dealloc<T: Future, S: Schedule>(ptr: NonNull<Header>) {
-    eprintln!("vtable::dealloc::{ptr:?}");
     let harness = Harness::<T, S>::from_raw(ptr);
     harness.dealloc();
 }

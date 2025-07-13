@@ -483,7 +483,6 @@ fn run(worker: Arc<Worker>) {
     impl Drop for AbortOnPanic {
         fn drop(&mut self) {
             if std::thread::panicking() {
-                eprintln!("worker thread panicking; aborting process");
                 std::process::abort();
             }
         }
@@ -553,9 +552,7 @@ impl Context {
 
             // First, check work available to the current worker.
             if let Some(task) = core.next_task(&self.worker) {
-                eprintln!("pre-run-local-task");
                 core = self.run_task(task, core)?;
-                eprintln!("post-run-local-task");
                 continue;
             }
 
@@ -567,9 +564,7 @@ impl Context {
             if let Some(task) = core.steal_work(&self.worker) {
                 // Found work, switch back to processing
                 core.stats.start_processing_scheduled_tasks();
-                eprintln!("pre-run-steal-task");
                 core = self.run_task(task, core)?;
-                eprintln!("post-run-steal-task");
             } else {
                 // Wait for work
                 core = if !self.defer.is_empty() {
@@ -783,7 +778,6 @@ impl Context {
                 if core.transition_from_parked(&self.worker) {
                     break;
                 }
-                eprintln!("transitioned from parked, continuing to park");
             }
         }
 
@@ -794,7 +788,6 @@ impl Context {
     }
 
     fn park_yield(&self, mut core: Box<Core>) -> Box<Core> {
-        eprintln!("park_yield");
         core = self.park_timeout(core, Some(Duration::ZERO));
         core
     }
@@ -862,11 +855,8 @@ impl Context {
 
         // Park thread
         if let Some(timeout) = duration {
-            eprintln!("xx parking thread with timeout: {timeout:?}");
             park.park_timeout(&self.worker.handle.driver, timeout);
-            eprintln!("unparked thread");
         } else {
-            eprintln!("parking thread indefinitely");
             park.park(&self.worker.handle.driver);
         }
 
@@ -957,7 +947,6 @@ impl Core {
             }
 
             if worker.inject().is_empty() {
-                eprintln!("no inject tasks available");
                 return None;
             }
 
@@ -1192,24 +1181,18 @@ impl Worker {
 
 impl Handle {
     pub(super) fn schedule_task(&self, task: Notified, is_yield: bool) {
-        eprintln!("schedule_task: start");
         with_current(|maybe_cx| {
-            eprintln!("schedule_task");
             if let Some(cx) = maybe_cx {
-                eprintln!("schedule_task: Some(cx)");
                 // Make sure the task is part of the **current** scheduler.
                 if self.ptr_eq(&cx.worker.handle) {
-                    eprintln!("schedule_task: self.ptr_eq");
                     // And the current thread still holds a core
                     if let Some(core) = cx.core.borrow_mut().as_mut() {
-                        eprintln!("schedule_task: Some(core)");
                         self.schedule_local(core, task, is_yield);
                         return;
                     }
                 }
             }
 
-            eprintln!("schedule_task: else");
             // Otherwise, use the inject queue.
             self.push_remote_task(task);
             self.notify_parked_remote();
@@ -1281,7 +1264,6 @@ impl Handle {
     }
 
     pub(crate) fn push_remote_timer(&self, hdl: EntryHandle) {
-        eprintln!("try lock inject timer");
         {
             let mut synced = self.shared.synced.lock();
             synced.inject_timer.push(hdl);
@@ -1310,10 +1292,8 @@ impl Handle {
 
     fn notify_parked_remote(&self) {
         if let Some(index) = self.shared.idle.worker_to_notify(&self.shared) {
-            eprintln!("notifying parked remote worker");
             self.shared.remotes[index].unpark.unpark(&self.driver);
         } else {
-            eprintln!("no parked remote worker to notify");
             // // If there is no worker to notify, then we can just notify all
             // // workers. This is a fallback mechanism.
             // self.notify_all();

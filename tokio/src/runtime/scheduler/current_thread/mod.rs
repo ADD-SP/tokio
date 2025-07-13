@@ -296,7 +296,6 @@ fn shutdown2(mut core: Box<Core>, handle: &Handle) -> Box<Core> {
     rt_handle.with_time(|time_handle| {
         let Some(hdl) = time_handle else {
             // If no time handle is available, we cannot process timers.
-            // eprintln!("no time handle available, cannot process timers");
             return;
         };
 
@@ -414,11 +413,9 @@ impl Context {
         let timeout = rt_handle.with_time(|time_hdl| {
             let Some(time_hdl) = time_hdl else {
                 // If no time handle is available, we cannot process timers.
-                // eprintln!("no time handle available, cannot process timers");
                 return None;
             };
 
-            // eprintln!("Processing inject timers...");
             let mut inject_timers: Vec<EntryHandle> = {
                 let mut lock = handle.shared.inject_timer.lock();
                 std::mem::take(&mut lock)
@@ -435,14 +432,12 @@ impl Context {
             });
 
             if fired {
-                // eprintln!("fired inject timers, yielding");
                 return Some(Duration::ZERO);
             }
 
             match core.wheel.next_expiration_time() {
                 Some(timeout) => {
                     let now = time_hdl.time_source().now(rt_handle.clock());
-                    // eprintln!("Next expiration time: {:?}", timeout);
                     Some(
                         time_hdl
                             .time_source()
@@ -460,7 +455,6 @@ impl Context {
             return core;
         }
 
-        // eprintln!("park forever");
 
         let mut driver = core.driver.take().expect("driver missing");
 
@@ -498,7 +492,6 @@ impl Context {
 
     /// Checks the driver for new events without blocking the thread.
     fn park_yield(&self, mut core: Box<Core>, handle: &Handle) -> Box<Core> {
-        // eprintln!("park_yield");
         let mut driver = core.driver.take().expect("driver missing");
 
         core.submit_metrics(handle);
@@ -522,7 +515,6 @@ impl Context {
             });
 
             if fired {
-                // eprintln!("fired inject timers, yielding");
                 return Duration::ZERO;
             }
 
@@ -540,8 +532,6 @@ impl Context {
             }
         });
 
-        eprintln!("park_yield with timeout: {timeout:?}");
-
         let (mut core, ()) = self.enter(core, || {
             if cfg!(feature = "test-util") {
                 if clock.can_auto_advance() {
@@ -554,8 +544,6 @@ impl Context {
             }
             self.defer.wake();
         });
-
-        eprintln!("park_yield woken up");
 
         rt_handle.with_time(|time_handle| {
             if let Some(time_handle) = time_handle {

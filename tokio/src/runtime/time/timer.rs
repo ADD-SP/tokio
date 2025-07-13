@@ -36,7 +36,6 @@ impl std::fmt::Debug for Timer {
 
 impl Drop for Timer {
     fn drop(&mut self) {
-        eprintln!("cancelled timer: {:?}", self.deadline);
         Pin::new(self).cancel();
     }
 }
@@ -73,16 +72,13 @@ impl Timer {
                 let hdl = entry::new(when, cx.waker(), Some(tx));
                 if unsafe { wheel.insert(hdl.clone()) } {
                     this.entry = Some(hdl);
-                    eprintln!("timer registered");
                     Poll::Pending
                 } else {
-                    eprintln!("timer is already expired, then fired immediately");
                     Poll::Ready(())
                 }
             } else {
                 let hdl = entry::new(when, cx.waker(), None);
                 this.entry = Some(hdl.clone());
-                eprintln!("timer push in inject");
                 push_inject(hdl);
                 Poll::Pending
             }
