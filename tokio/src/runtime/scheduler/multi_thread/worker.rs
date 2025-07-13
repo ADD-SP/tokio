@@ -63,7 +63,6 @@ use crate::runtime::scheduler::multi_thread::{
 };
 use crate::runtime::scheduler::{inject, Defer, Lock};
 use crate::runtime::task::OwnedTasks;
-use crate::runtime::time::{EntryHandle, Wheel};
 use crate::runtime::{blocking, driver, scheduler, task, Config, SchedulerMetrics, WorkerMetrics};
 use crate::runtime::{context, TaskHooks};
 use crate::task::coop;
@@ -74,7 +73,13 @@ use std::cell::RefCell;
 use std::task::Waker;
 use std::thread;
 use std::time::Duration;
-use std::sync::mpsc;
+
+cfg_time! {
+    use crate::runtime::scheduler::util;
+    use crate::runtime::time::{EntryHandle, Wheel};
+
+    use std::sync::mpsc;
+}
 
 mod metrics;
 
@@ -117,12 +122,15 @@ struct Core {
     /// The worker-local run queue.
     run_queue: queue::Local<Arc<Handle>>,
 
+    #[cfg(feature = "time")]
     /// Worker local timer wheel
     wheel: Wheel,
 
+    #[cfg(feature = "time")]
     /// Channel for sending timers that need to be cancelled
     timer_cancel_tx: mpsc::Sender<EntryHandle>,
 
+    #[cfg(feature = "time")]
     /// Channel for receiving timers that need to be cancelled
     timer_cancel_rx: mpsc::Receiver<EntryHandle>,
 
@@ -205,6 +213,7 @@ pub(crate) struct Synced {
     /// Synchronized state for `Inject`.
     pub(crate) inject: inject::Synced,
 
+    #[cfg(feature = "time")]
     /// Timers pending to be registered.
     /// This is used to register a timer but the [`Core`]
     /// is not available in the current thread.
@@ -270,7 +279,7 @@ pub(super) fn create(
         let unpark = park.unpark();
         let metrics = WorkerMetrics::from_config(&config);
         let stats = Stats::new(&metrics);
-        let wheel = Wheel::new();
+        #[cfg(feature = "time")]
         let (timer_cancel_tx, timer_cancel_rx) = mpsc::channel();
 
         cores.push(Box::new(Core {
@@ -278,8 +287,11 @@ pub(super) fn create(
             lifo_slot: None,
             lifo_enabled: !config.disable_lifo_slot,
             run_queue,
-            wheel,
+            #[cfg(feature = "time")]
+            wheel: Wheel::new(),
+            #[cfg(feature = "time")]
             timer_cancel_tx,
+            #[cfg(feature = "time")]
             timer_cancel_rx,
             is_searching: false,
             is_shutdown: false,
@@ -308,6 +320,7 @@ pub(super) fn create(
             synced: Mutex::new(Synced {
                 idle: idle_synced,
                 inject: inject_synced,
+                #[cfg(feature = "time")]
                 inject_timers: vec![],
             }),
             shutdown_cores: Mutex::new(vec![]),
@@ -574,12 +587,31 @@ impl Context {
             } else {
                 // Wait for work
                 core = if !self.defer.is_empty() {
-                    self.park_timeout(core, Some(Duration::from_millis(0)))
+                    self.park_yield(core)
                 } else {
                     self.park(core)
                 };
                 core.stats.start_processing_scheduled_tasks();
             }
+        }
+
+        #[cfg(feature = "time")]
+        {
+            let _ = util::drive_local_timers(
+                &mut core.wheel,
+                core.timer_cancel_tx.clone(),
+                &core.timer_cancel_rx,
+                self.worker.handle.take_remote_timers(),
+                &self.worker.handle.driver,
+                None,
+            );
+            util::shutdown_local_timers(
+                &mut core.wheel,
+                core.timer_cancel_tx.clone(),
+                &core.timer_cancel_rx,
+                self.worker.handle.take_remote_timers(),
+                &self.worker.handle.driver,
+            );
         }
 
         core.pre_shutdown(&self.worker);
@@ -723,7 +755,7 @@ impl Context {
 
             // Call `park` with a 0 timeout. This enables the I/O driver, timer, ...
             // to run without actually putting the thread to sleep.
-            core = self.park_timeout(core, Some(Duration::from_millis(0)));
+            core = self.park_yield(core);
 
             // Run regularly scheduled maintenance
             core.maintenance(&self.worker);
@@ -756,7 +788,7 @@ impl Context {
                 core.stats
                     .submit(&self.worker.handle.shared.worker_metrics[self.worker.index]);
 
-                core = self.park_timeout(core, None);
+                core = self.park_internal(core, None);
 
                 core.stats.unparked();
 
@@ -775,8 +807,22 @@ impl Context {
         core
     }
 
-    fn park_timeout(&self, mut core: Box<Core>, duration: Option<Duration>) -> Box<Core> {
+    fn park_yield(&self, core: Box<Core>) -> Box<Core> {
+        self.park_internal(core, Some(Duration::from_millis(0)))
+    }
+
+    fn park_internal(&self, mut core: Box<Core>, duration: Option<Duration>) -> Box<Core> {
         self.assert_lifo_enabled_is_correct(&core);
+
+        #[cfg(feature = "time")]
+        let duration = util::drive_local_timers(
+            &mut core.wheel,
+            core.timer_cancel_tx.clone(),
+            &core.timer_cancel_rx,
+            self.worker.handle.take_remote_timers(),
+            &self.worker.handle.driver,
+            duration,
+        );
 
         // Take the parker out of core
         let mut park = core.park.take().expect("park missing");
@@ -816,27 +862,29 @@ impl Context {
         }
     }
 
-    fn with_core<F, R>(&self, f: F) -> R
-    where
-        F: FnOnce(Option<&mut Core>) -> R,
-    {
-        match self.core.borrow_mut().as_mut() {
-            Some(core) => f(Some(core)),
-            None => f(None),
-        }
-    }
-
-    pub(crate) fn with_wheel<F, R>(&self, f: F) -> R
-    where
-        F: FnOnce(Option<(&mut Wheel, mpsc::Sender<EntryHandle>)>) -> R,
-    {
-        self.with_core(|core| {
-            if let Some(core) = core {
-                f(Some((&mut core.wheel, core.timer_cancel_tx.clone())))
-            } else {
-                f(None)
+    cfg_time! {
+        fn with_core<F, R>(&self, f: F) -> R
+        where
+            F: FnOnce(Option<&mut Core>) -> R,
+        {
+            match self.core.borrow_mut().as_mut() {
+                Some(core) => f(Some(core)),
+                None => f(None),
             }
-        })
+        }
+
+        pub(crate) fn with_wheel<F, R>(&self, f: F) -> R
+        where
+            F: FnOnce(Option<(&mut Wheel, mpsc::Sender<EntryHandle>)>) -> R,
+        {
+            self.with_core(|core| {
+                if let Some(core) = core {
+                    f(Some((&mut core.wheel, core.timer_cancel_tx.clone())))
+                } else {
+                    f(None)
+                }
+            })
+        }
     }
 }
 
@@ -1176,13 +1224,20 @@ impl Handle {
         }
     }
 
-    /// Push a timer handle from the remote thread.
-    pub(crate) fn push_remote_timer(&self, hdl: EntryHandle) {
-        {
-            let mut synced = self.shared.synced.lock();
-            synced.inject_timers.push(hdl);
+    cfg_time! {
+        /// Push a timer handle from the remote thread.
+        pub(crate) fn push_remote_timer(&self, hdl: EntryHandle) {
+            {
+                let mut synced = self.shared.synced.lock();
+                synced.inject_timers.push(hdl);
+            }
+            self.notify_parked_remote();
         }
-        self.notify_parked_remote();
+
+        pub(crate) fn take_remote_timers(&self) -> Vec<EntryHandle> {
+            let mut synced = self.shared.synced.lock();
+            std::mem::take(&mut synced.inject_timers)
+        }
     }
 
     pub(super) fn close(&self) {
