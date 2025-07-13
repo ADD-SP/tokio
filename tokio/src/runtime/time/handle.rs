@@ -68,7 +68,7 @@ impl Handle {
     }
 
     cfg_test_util! {
-        fn did_wake(&self) -> bool {
+        pub(crate) fn did_wake(&self) -> bool {
             self.did_wake.swap(false, Ordering::SeqCst)
         }
     }

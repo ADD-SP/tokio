@@ -27,6 +27,7 @@ impl std::fmt::Debug for Timer {
 
 impl Drop for Timer {
     fn drop(&mut self) {
+        eprintln!("cancelled timer: {:?}", self.deadline);
         Pin::new(self).cancel();
     }
 }

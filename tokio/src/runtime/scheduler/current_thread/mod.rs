@@ -294,9 +294,22 @@ fn shutdown2(mut core: Box<Core>, handle: &Handle) -> Box<Core> {
 
     let rt_handle = &handle.driver;
     rt_handle.with_time(|time_handle| {
-        if let Some(time_handle) = time_handle {
-            time_handle.shutdown(&mut core.wheel);
+        let Some(hdl) = time_handle else {
+            // If no time handle is available, we cannot process timers.
+            // eprintln!("no time handle available, cannot process timers");
+            return;
+        };
+
+        // Cancel all timers to avoid
+        // process_at_time(u64::MAX) iterate too long
+        // for big timer (like sleep(u64::MAX / 10))
+        while let Ok(entry) = core.cancel_rx.try_recv() {
+            if !entry.is_pending() && !entry.is_premature() {
+                unsafe { core.wheel.remove(entry) }
+            }
         }
+
+        hdl.shutdown(&mut core.wheel);
     });
 
     // Drain local queue
@@ -437,8 +450,10 @@ impl Context {
         });
 
         if timeout.is_some() {
-            // eprintln!("found timers, try yielding instead of parking");
-            return self.park_yield(core, handle);
+            core.metrics.about_to_park();
+            let mut core = self.park_yield(core, handle);
+            core.metrics.unparked();
+            return core;
         }
 
         // eprintln!("park forever");
@@ -485,6 +500,7 @@ impl Context {
         core.submit_metrics(handle);
 
         let rt_handle = &self.handle.driver;
+        let clock = rt_handle.clock();
         let timeout = rt_handle.with_time(|time_hdl| {
             let mut inject_timers: Vec<EntryHandle> = {
                 let mut lock = handle.shared.inject_timer.lock();
@@ -523,7 +539,15 @@ impl Context {
         eprintln!("park_yield with timeout: {:?}", timeout);
 
         let (mut core, ()) = self.enter(core, || {
-            driver.park_timeout(&handle.driver, timeout);
+            if cfg!(feature = "test-util") {
+                if clock.can_auto_advance() {
+                    driver.park_timeout(&handle.driver, Duration::ZERO);
+                } else {
+                    driver.park_timeout(&handle.driver, timeout);
+                }
+            } else {
+                driver.park_timeout(&handle.driver, timeout);
+            }
             self.defer.wake();
 
         });
@@ -537,6 +561,16 @@ impl Context {
                         unsafe { core.wheel.remove(entry) }
                     }
                 }
+
+                #[cfg(feature = "test-util")]
+                if clock.can_auto_advance() {
+                    if !time_handle.did_wake() {
+                        if let Err(msg) = clock.advance(timeout) {
+                            panic!("{msg}");
+                        }
+                    }
+                }
+
                 time_handle.process(rt_handle, &mut core.wheel);
             }
         });

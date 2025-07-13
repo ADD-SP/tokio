@@ -553,7 +553,9 @@ impl Context {
 
             // First, check work available to the current worker.
             if let Some(task) = core.next_task(&self.worker) {
+                eprintln!("pre-run-local-task");
                 core = self.run_task(task, core)?;
+                eprintln!("post-run-local-task");
                 continue;
             }
 
@@ -565,7 +567,9 @@ impl Context {
             if let Some(task) = core.steal_work(&self.worker) {
                 // Found work, switch back to processing
                 core.stats.start_processing_scheduled_tasks();
+                eprintln!("pre-run-steal-task");
                 core = self.run_task(task, core)?;
+                eprintln!("post-run-steal-task");
             } else {
                 // Wait for work
                 core = if !self.defer.is_empty() {
@@ -580,6 +584,15 @@ impl Context {
 
         let rt_handle = &self.worker.handle.driver;
         rt_handle.with_time(|time_handle| {
+            // Cancel all timers to avoid
+            // process_at_time(u64::MAX) iterate too long
+            // for big timer (like sleep(u64::MAX / 10))
+            while let Ok(entry) = core.cancel_rx.try_recv() {
+                if !entry.is_pending() && !entry.is_premature() {
+                    unsafe { core.wheel.remove(entry) }
+                }
+            }
+
             if let Some(time_handle) = time_handle {
                 time_handle.shutdown(&mut core.wheel);
             }
@@ -754,7 +767,6 @@ impl Context {
             f();
         }
 
-
         if core.transition_to_parked(&self.worker) {
             while !core.is_shutdown && !core.is_traced {
                 core.stats.about_to_park();
@@ -782,6 +794,7 @@ impl Context {
     }
 
     fn park_yield(&self, mut core: Box<Core>) -> Box<Core> {
+        eprintln!("park_yield");
         core = self.park_timeout(core, Some(Duration::ZERO));
         core
     }
@@ -793,6 +806,12 @@ impl Context {
                 // If there is no time handle, then we cannot use the timer wheel.
                 return duration;
             };
+
+            while let Ok(entry) = core.cancel_rx.try_recv() {
+                if !entry.is_pending() && !entry.is_premature() {
+                    unsafe { core.wheel.remove(entry) }
+                }
+            }
 
             let mut inject_timers = {
                 let mut lock = self.worker.handle.shared.synced.lock();
@@ -839,7 +858,7 @@ impl Context {
 
         // Park thread
         if let Some(timeout) = duration {
-            eprintln!("parking thread with timeout: {:?}", timeout);
+            eprintln!("xx parking thread with timeout: {:?}", timeout);
             park.park_timeout(&self.worker.handle.driver, timeout);
             eprintln!("unparked thread");
         } else {
@@ -1190,6 +1209,10 @@ impl Handle {
             // Otherwise, use the inject queue.
             self.push_remote_task(task);
             self.notify_parked_remote();
+            // workaround of `test_abort_without_panic_3157`
+            // since `self.notify_parked_remote()` doesn't
+            // notify the parked driver.
+            self.driver.unpark();
         });
     }
 

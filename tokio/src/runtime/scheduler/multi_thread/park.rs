@@ -212,8 +212,12 @@ impl Inner {
         // is already `NOTIFIED`. That is why this must be a swap rather than a
         // compare-and-swap that returns if it reads `NOTIFIED` on failure.
         match self.state.swap(NOTIFIED, SeqCst) {
-            EMPTY => {}    // no one was waiting
-            NOTIFIED => {} // already unparked
+            EMPTY => {
+                eprintln!("unpark: no one was waiting");
+            }    // no one was waiting
+            NOTIFIED => {
+                eprintln!("unpark: thread was already notified");
+            } // already unparked
             PARKED_CONDVAR => self.unpark_condvar(),
             PARKED_DRIVER => driver.unpark(),
             actual => panic!("inconsistent state in unpark; actual = {actual}"),
