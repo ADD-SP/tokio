@@ -4,7 +4,7 @@ use self::level::Level;
 
 pub(crate) mod entry;
 pub(crate) use self::entry::{
-    EntryList, Handle as EntryHandle, MAX_SAFE_MILLIS_DURATION, STATE_PENDING,
+    EntryList, Handle as EntryHandle, MAX_SAFE_MILLIS_DURATION,
 };
 
 use std::array;

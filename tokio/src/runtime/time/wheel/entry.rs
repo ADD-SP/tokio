@@ -1,4 +1,3 @@
-use crate::loom::cell::UnsafeCell;
 use crate::loom::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 use crate::loom::sync::Mutex;
 use crate::{sync::AtomicWaker, util::linked_list};

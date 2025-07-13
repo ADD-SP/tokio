@@ -834,7 +834,7 @@ impl Context {
 
             let timer_dur = match core.wheel.next_expiration_time() {
                 Some(timeout) => {
-                    let now = time_handle.time_source().now(&rt_handle.clock());
+                    let now = time_handle.time_source().now(rt_handle.clock());
                     Some(
                         time_handle
                             .time_source()
@@ -862,7 +862,7 @@ impl Context {
 
         // Park thread
         if let Some(timeout) = duration {
-            eprintln!("xx parking thread with timeout: {:?}", timeout);
+            eprintln!("xx parking thread with timeout: {timeout:?}");
             park.park_timeout(&self.worker.handle.driver, timeout);
             eprintln!("unparked thread");
         } else {
@@ -881,7 +881,7 @@ impl Context {
                 return;
             };
 
-            while let Some(entry) = core.cancel_rx.try_recv().ok() {
+            while let Ok(entry) = core.cancel_rx.try_recv() {
                 if !entry.is_pending() && !entry.is_premature() {
                     unsafe { core.wheel.remove(entry) }
                 }

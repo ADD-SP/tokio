@@ -2,7 +2,7 @@ use crate::runtime::time::wheel::EntryList;
 
 use super::entry;
 
-use std::{array, fmt, ptr::NonNull};
+use std::{array, fmt};
 
 /// Wheel for a single level in the timer. This wheel contains 64 slots.
 pub(crate) struct Level {

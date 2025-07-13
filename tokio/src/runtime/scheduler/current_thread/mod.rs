@@ -5,7 +5,7 @@ use crate::runtime::scheduler::{self, Defer, Inject};
 use crate::runtime::task::{
     self, JoinHandle, OwnedTasks, Schedule, SpawnLocation, Task, TaskHarnessScheduleHooks,
 };
-use crate::runtime::time::{self, EntryHandle, Wheel};
+use crate::runtime::time::{EntryHandle, Wheel};
 use crate::runtime::{
     blocking, context, Config, MetricsBatch, SchedulerMetrics, TaskHooks, TaskMeta, WorkerMetrics,
 };
@@ -540,7 +540,7 @@ impl Context {
             }
         });
 
-        eprintln!("park_yield with timeout: {:?}", timeout);
+        eprintln!("park_yield with timeout: {timeout:?}");
 
         let (mut core, ()) = self.enter(core, || {
             if cfg!(feature = "test-util") {
@@ -559,20 +559,19 @@ impl Context {
 
         rt_handle.with_time(|time_handle| {
             if let Some(time_handle) = time_handle {
-                while let Some(entry) = core.cancel_rx.try_recv().ok() {
+                while let Ok(entry) = core.cancel_rx.try_recv() {
                     if !entry.is_pending() && !entry.is_premature() {
                         unsafe { core.wheel.remove(entry) }
                     }
                 }
 
                 #[cfg(feature = "test-util")]
-                if clock.can_auto_advance() {
-                    if !time_handle.did_wake() {
+                if clock.can_auto_advance()
+                    && !time_handle.did_wake() {
                         if let Err(msg) = clock.advance(timeout) {
                             panic!("{msg}");
                         }
                     }
-                }
 
                 time_handle.process(rt_handle, &mut core.wheel);
             }

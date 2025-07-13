@@ -19,14 +19,10 @@ mod timer;
 pub(crate) use timer::Timer;
 
 use crate::loom::sync::atomic::{AtomicBool, Ordering};
-use crate::loom::sync::Mutex;
-use crate::runtime::driver::{self, IoHandle, IoStack};
+use crate::runtime::driver::{self, IoStack};
 use crate::time::{Clock, Duration};
-use crate::util::WakeList;
 
-use std::fmt;
 use std::sync::Arc;
-use std::{num::NonZeroU64, ptr::NonNull};
 
 /// Time implementation that drives [`Sleep`][sleep], [`Interval`][interval], and [`Timeout`][timeout].
 ///

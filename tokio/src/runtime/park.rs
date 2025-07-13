@@ -162,9 +162,9 @@ impl Inner {
         // from a notification, we just want to unconditionally set the state back to
         // empty, either consuming a notification or un-flagging ourselves as
         // parked.
-        eprintln!("inner-pre-parking condvar with timeout: {:?}", dur);
+        eprintln!("inner-pre-parking condvar with timeout: {dur:?}");
         let (_m, _result) = self.condvar.wait_timeout(m, dur).unwrap();
-        eprintln!("inner-post-parking condvar with timeout: {:?}", dur);
+        eprintln!("inner-post-parking condvar with timeout: {dur:?}");
 
         #[cfg(all(target_family = "wasm", not(target_feature = "atomics")))]
         // Wasm without atomics doesn't have threads, so just sleep.

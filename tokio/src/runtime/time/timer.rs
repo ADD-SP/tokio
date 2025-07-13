@@ -57,7 +57,7 @@ impl Timer {
     pub(crate) fn is_elapsed(&self) -> bool {
         self.entry
             .as_ref()
-            .map_or(false, |entry| entry.is_elapsed())
+            .is_some_and(|entry| entry.is_elapsed())
     }
 
     fn register(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
