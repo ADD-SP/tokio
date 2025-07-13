@@ -13,7 +13,7 @@ mod source;
 pub(crate) use source::TimeSource;
 
 mod wheel;
-pub(crate) use wheel::{Wheel, EntryHandle};
+pub(crate) use wheel::{EntryHandle, Wheel};
 
 mod timer;
 pub(crate) use timer::Timer;
@@ -109,10 +109,7 @@ impl Driver {
             did_wake: Arc::new(AtomicBool::new(false)),
         };
 
-        let driver = Driver {
-            park,
-            is_shutdown,
-        };
+        let driver = Driver { park, is_shutdown };
 
         (driver, handle)
     }
@@ -147,7 +144,6 @@ impl Driver {
         }
     }
 }
-
 
 // #[cfg(test)]
 // mod tests;

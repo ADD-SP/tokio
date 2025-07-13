@@ -142,7 +142,6 @@ impl Level {
         let when = unsafe { item.when() };
         let slot = slot_for(when, self.level);
 
-
         unsafe { self.slot[slot].remove(item.into()) };
         if self.slot[slot].is_empty() {
             // The bit is currently set

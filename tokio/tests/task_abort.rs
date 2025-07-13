@@ -28,7 +28,8 @@ fn test_abort_without_panic_3157() {
         .unwrap();
 
     rt.block_on(async move {
-        let handle = tokio::spawn(async move { tokio::time::sleep(Duration::new(10000000, 0)).await });
+        let handle =
+            tokio::spawn(async move { tokio::time::sleep(Duration::new(10000000, 0)).await });
 
         // wait for task to sleep.
         tokio::time::sleep(Duration::from_millis(10)).await;

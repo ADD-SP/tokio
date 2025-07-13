@@ -214,7 +214,7 @@ impl Inner {
         match self.state.swap(NOTIFIED, SeqCst) {
             EMPTY => {
                 eprintln!("unpark: no one was waiting");
-            }    // no one was waiting
+            } // no one was waiting
             NOTIFIED => {
                 eprintln!("unpark: thread was already notified");
             } // already unparked

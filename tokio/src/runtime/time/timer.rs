@@ -1,10 +1,19 @@
 use super::wheel::EntryHandle;
 use crate::{
-    runtime::{context, time::{wheel::{entry, MAX_SAFE_MILLIS_DURATION}, Wheel}},
-    time::Instant, util::error::RUNTIME_SHUTTING_DOWN_ERROR,
+    runtime::{
+        context,
+        time::{
+            wheel::{entry, MAX_SAFE_MILLIS_DURATION},
+            Wheel,
+        },
+    },
+    time::Instant,
+    util::error::RUNTIME_SHUTTING_DOWN_ERROR,
 };
 use std::{
-    pin::Pin, sync::mpsc, task::{Context, Poll}
+    pin::Pin,
+    sync::mpsc,
+    task::{Context, Poll},
 };
 
 pub(crate) struct Timer {
@@ -46,7 +55,9 @@ impl Timer {
     }
 
     pub(crate) fn is_elapsed(&self) -> bool {
-        self.entry.as_ref().map_or(false, |entry| entry.is_elapsed())
+        self.entry
+            .as_ref()
+            .map_or(false, |entry| entry.is_elapsed())
     }
 
     fn register(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
@@ -54,7 +65,10 @@ impl Timer {
 
         with_current_wheel(|maybe_wheel| {
             let when = deadline_to_tick(this.deadline);
-            assert!(when <= MAX_SAFE_MILLIS_DURATION, "Timer deadline exceeds maximum safe duration");
+            assert!(
+                when <= MAX_SAFE_MILLIS_DURATION,
+                "Timer deadline exceeds maximum safe duration"
+            );
             if let Some((wheel, tx)) = maybe_wheel {
                 let hdl = entry::new(when, cx.waker(), Some(tx));
                 if unsafe { wheel.insert(hdl.clone()) } {
@@ -112,7 +126,8 @@ fn push_inject(hdl: EntryHandle) {
     context::with_current(|sched_hdl| match sched_hdl {
         CurrentThread(sched_hdl) => sched_hdl.push_remote_timer(hdl),
         MultiThread(sched_hdl) => sched_hdl.push_remote_timer(hdl),
-    }).unwrap();
+    })
+    .unwrap();
 }
 
 fn deadline_to_tick(deadline: Instant) -> u64 {

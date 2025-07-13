@@ -1,9 +1,9 @@
-use std::sync::Arc;
-use std::{ptr::NonNull, task::Waker, sync::mpsc};
-use crate::{sync::AtomicWaker, util::linked_list};
 use crate::loom::cell::UnsafeCell;
 use crate::loom::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 use crate::loom::sync::Mutex;
+use crate::{sync::AtomicWaker, util::linked_list};
+use std::sync::Arc;
+use std::{ptr::NonNull, sync::mpsc, task::Waker};
 
 pub(crate) type EntryList = linked_list::LinkedList<Entry, Entry>;
 
@@ -123,7 +123,8 @@ impl Entry {
     pub(crate) fn cancel(&self) {
         if self.is_registered() {
             if let Some(tx) = self.cancel_tx.lock().take() {
-                tx.send(self.handle.clone()).expect("Failed to send cancel message");
+                tx.send(self.handle.clone())
+                    .expect("Failed to send cancel message");
             }
         }
     }
@@ -136,7 +137,12 @@ pub(crate) struct Handle {
 
 impl std::fmt::Display for Handle {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Handle({:p}, {})", self.entry.as_ptr(), self.refs.fetch_or(0, Ordering::Relaxed))
+        write!(
+            f,
+            "Handle({:p}, {})",
+            self.entry.as_ptr(),
+            self.refs.fetch_or(0, Ordering::Relaxed)
+        )
     }
 }
 
@@ -179,11 +185,7 @@ impl From<Handle> for NonNull<Entry> {
 unsafe impl Send for Handle {}
 unsafe impl Sync for Handle {}
 
-pub(crate) fn new(
-    when: u64,
-    waker: &Waker,
-    cancel_tx: Option<mpsc::Sender<Handle>>,
-) -> Handle {
+pub(crate) fn new(when: u64, waker: &Waker, cancel_tx: Option<mpsc::Sender<Handle>>) -> Handle {
     let refs = Arc::new(AtomicUsize::new(2));
 
     let mut entry = Box::new(Entry {

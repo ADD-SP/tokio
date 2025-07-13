@@ -3,7 +3,9 @@ pub(crate) use self::level::Expiration;
 use self::level::Level;
 
 pub(crate) mod entry;
-pub(crate) use self::entry::{EntryList, Handle as EntryHandle, STATE_PENDING, MAX_SAFE_MILLIS_DURATION};
+pub(crate) use self::entry::{
+    EntryList, Handle as EntryHandle, MAX_SAFE_MILLIS_DURATION, STATE_PENDING,
+};
 
 use std::array;
 

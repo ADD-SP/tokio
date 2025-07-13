@@ -1,6 +1,6 @@
+use crate::loom::sync::atomic::{AtomicBool, Ordering};
 use crate::runtime::driver;
 use crate::runtime::time::{TimeSource, Wheel};
-use crate::loom::sync::atomic::{AtomicBool, Ordering};
 use std::{fmt, sync::Arc};
 
 /// Handle to time driver instance.

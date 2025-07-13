@@ -71,10 +71,10 @@ use crate::util::atomic_cell::AtomicCell;
 use crate::util::rand::{FastRand, RngSeedGenerator};
 
 use std::cell::RefCell;
-use std::task::Waker;
-use std::{thread, vec};
-use std::time::Duration;
 use std::sync::mpsc;
+use std::task::Waker;
+use std::time::Duration;
+use std::{thread, vec};
 
 mod metrics;
 
@@ -835,7 +835,11 @@ impl Context {
             let timer_dur = match core.wheel.next_expiration_time() {
                 Some(timeout) => {
                     let now = time_handle.time_source().now(&rt_handle.clock());
-                    Some(time_handle.time_source().tick_to_duration(timeout.saturating_sub(now)))
+                    Some(
+                        time_handle
+                            .time_source()
+                            .tick_to_duration(timeout.saturating_sub(now)),
+                    )
                 }
                 None => None,
             };

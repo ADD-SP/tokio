@@ -9,10 +9,10 @@ use crate::runtime::time::{self, EntryHandle, Wheel};
 use crate::runtime::{
     blocking, context, Config, MetricsBatch, SchedulerMetrics, TaskHooks, TaskMeta, WorkerMetrics,
 };
-use std::sync::mpsc;
 use crate::sync::notify::Notify;
 use crate::util::atomic_cell::AtomicCell;
 use crate::util::{waker_ref, RngSeedGenerator, Wake, WakerRef};
+use std::sync::mpsc;
 
 use std::cell::RefCell;
 use std::collections::VecDeque;
@@ -443,7 +443,11 @@ impl Context {
                 Some(timeout) => {
                     let now = time_hdl.time_source().now(rt_handle.clock());
                     // eprintln!("Next expiration time: {:?}", timeout);
-                    Some(time_hdl.time_source().tick_to_duration(timeout.saturating_sub(now)))
+                    Some(
+                        time_hdl
+                            .time_source()
+                            .tick_to_duration(timeout.saturating_sub(now)),
+                    )
                 }
                 None => None,
             }
@@ -523,15 +527,15 @@ impl Context {
             }
 
             match time_hdl {
-                Some(time_hdl) => {
-                    match core.wheel.next_expiration_time() {
-                        Some(timeout) => {
-                            let now = time_hdl.time_source().now(rt_handle.clock());
-                            time_hdl.time_source().tick_to_duration(timeout.saturating_sub(now))
-                        }
-                        None => Duration::from_millis(0),
+                Some(time_hdl) => match core.wheel.next_expiration_time() {
+                    Some(timeout) => {
+                        let now = time_hdl.time_source().now(rt_handle.clock());
+                        time_hdl
+                            .time_source()
+                            .tick_to_duration(timeout.saturating_sub(now))
                     }
-                }
+                    None => Duration::from_millis(0),
+                },
                 None => Duration::from_millis(0),
             }
         });
@@ -549,7 +553,6 @@ impl Context {
                 driver.park_timeout(&handle.driver, timeout);
             }
             self.defer.wake();
-
         });
 
         eprintln!("park_yield woken up");
