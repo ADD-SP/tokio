@@ -1,9 +1,10 @@
 use crate::loom::sync::atomic::{AtomicU8, Ordering::*};
-use crate::loom::sync::{Arc, Mutex};
+use crate::loom::sync::Mutex;
 use crate::{sync::AtomicWaker, util::linked_list};
 use std::ptr::NonNull;
 use std::sync::mpsc::Sender;
 use std::task::Waker;
+use std::sync::{Arc, Weak};
 
 pub(crate) type EntryList = linked_list::LinkedList<Entry, Entry>;
 
@@ -25,7 +26,10 @@ const STATE_PENDING: u8 = 3;
 const STATE_WOKEN_UP: u8 = 4;
 
 #[derive(Debug)]
-struct Inner {
+pub(super) struct Entry {
+    /// The pointers used by the intrusive linked list.
+    pointers: linked_list::Pointers<Entry>,
+
     /// The tick when this entry is scheduled to expire.
     deadline: u64,
 
@@ -38,14 +42,6 @@ struct Inner {
     cancel_tx: Mutex<Option<Sender<Handle>>>,
 
     state: AtomicU8,
-}
-
-/// The entry in the timer wheel.
-pub(crate) struct Entry {
-    /// The pointers used by the intrusive linked list.
-    pointers: linked_list::Pointers<Entry>,
-
-    inner: Arc<Inner>,
 }
 
 generate_addr_of_methods! {
@@ -87,21 +83,24 @@ impl RawHandle {
     /// # Safety
     ///
     /// [`Self::ptr`] must be a valid pointer to an [`Entry`].
-    pub(crate) unsafe fn upgrade(self) -> Handle {
-        let inner = Arc::clone(&self.ptr.as_ref().inner);
-        Handle {
-            ptr: self.ptr,
-            inner,
+    pub(super) unsafe fn upgrade(self) -> Handle {
+        let weak = Weak::from_raw(self.ptr.as_ptr());
+        unsafe {
+            Handle {
+                // Safety: `self.ptr` is guaranteed to be valid
+                entry: weak.upgrade().expect("Entry must not be dropped yet"),
+            }
         }
+    }
+
+    pub(super) fn as_entry_ptr(&self) -> NonNull<Entry> {
+        self.ptr
     }
 }
 
 #[derive(Debug, Clone)]
 pub(crate) struct Handle {
-    /// A pointer to the entry in the timer wheel.
-    ptr: NonNull<Entry>,
-
-    inner: Arc<Inner>,
+    entry: Arc<Entry>,
 }
 
 /// Safety:
@@ -120,22 +119,16 @@ unsafe impl Sync for Handle {}
 
 impl Handle {
     pub(crate) fn new(deadline: u64, waker: &Waker) -> Self {
-        let inner = Arc::new(Inner {
+        let entry = Arc::new(Entry {
+            pointers: linked_list::Pointers::new(),
             deadline,
             waker: AtomicWaker::new(),
             cancel_tx: Mutex::new(None),
             state: AtomicU8::new(STATE_UNREGISTERED),
         });
-        inner.waker.register_by_ref(waker);
+        entry.waker.register_by_ref(waker);
 
-        let ptr = Box::into_raw(Box::new(Entry {
-            pointers: linked_list::Pointers::new(),
-            inner: Arc::clone(&inner),
-        }));
-        // Safety: `Box::into_raw` always returns a valid pointer
-        let ptr = unsafe { NonNull::new_unchecked(ptr) };
-
-        Handle { ptr, inner }
+        Handle { entry }
     }
 
     /// Wake the entry if it is already in the pending queue of the timer wheel.
@@ -144,9 +137,9 @@ impl Handle {
     ///
     /// Panics if the entry is not transitioned to the pending state.
     pub(crate) fn wake(&self) {
-        let old = self.inner.state.swap(STATE_WOKEN_UP, SeqCst);
+        let old = self.entry.state.swap(STATE_WOKEN_UP, SeqCst);
         assert!(old == STATE_PENDING);
-        self.inner.waker.wake();
+        self.entry.waker.wake();
     }
 
     /// Wake the entry if it has already elapsed before registering to the timer wheel.
@@ -155,13 +148,13 @@ impl Handle {
     ///
     /// Panics if the entry is not in the unregistered state.
     pub(crate) fn wake_unregistered(&self) {
-        let old = self.inner.state.swap(STATE_WOKEN_UP, SeqCst);
+        let old = self.entry.state.swap(STATE_WOKEN_UP, SeqCst);
         assert!(old == STATE_UNREGISTERED);
-        self.inner.waker.wake();
+        self.entry.waker.wake();
     }
 
     pub(crate) fn register_waker(&self, waker: &Waker) {
-        self.inner.waker.register_by_ref(waker);
+        self.entry.waker.register_by_ref(waker);
     }
 
     /// # Panic
@@ -169,12 +162,12 @@ impl Handle {
     /// Panics if the entry is not in the unregistered state.
     pub(crate) fn transition_to_registered(&self, cancel_tx: Sender<Handle>) {
         {
-            let mut maybe_tx = self.inner.cancel_tx.lock();
+            let mut maybe_tx = self.entry.cancel_tx.lock();
             assert!(maybe_tx.is_none(), "cancel sender already set");
             *maybe_tx = Some(cancel_tx);
             // lock is dropped here
         }
-        let old = self.inner.state.swap(STATE_REGISTERED, SeqCst);
+        let old = self.entry.state.swap(STATE_REGISTERED, SeqCst);
         assert_eq!(old, STATE_UNREGISTERED, "Entry not unregistered");
     }
 
@@ -182,10 +175,10 @@ impl Handle {
     ///
     /// Panics if the entry is not in the registered state.
     pub(crate) fn transition_to_pending(&self, not_after: u64) -> Result<(), u64> {
-        if self.inner.deadline > not_after {
-            return Err(self.inner.deadline);
+        if self.entry.deadline > not_after {
+            return Err(self.entry.deadline);
         }
-        let old = self.inner.state.swap(STATE_PENDING, SeqCst);
+        let old = self.entry.state.swap(STATE_PENDING, SeqCst);
         assert_eq!(old, STATE_REGISTERED, "Entry not registered");
         Ok(())
     }
@@ -195,10 +188,10 @@ impl Handle {
     /// Panics if receiver side is closed, this is usually caused by
     /// the shutdown logic dropping the receiver side too early.
     pub(crate) fn cancel(&self) {
-        let state = self.inner.state.fetch_or(0, SeqCst);
+        let state = self.entry.state.fetch_or(0, SeqCst);
         if state & STATE_REGISTERED != 0 {
             let maybe_tx = {
-                let mut lock = self.inner.cancel_tx.lock();
+                let mut lock = self.entry.cancel_tx.lock();
                 lock.take()
                 // lock is dropped here to avoid poisoning the Mutex
             };
@@ -210,33 +203,27 @@ impl Handle {
     }
 
     pub(crate) fn deadline(&self) -> u64 {
-        self.inner.deadline
+        self.entry.deadline
     }
 
     pub(crate) fn is_registered(&self) -> bool {
-        self.inner.state.fetch_or(0, SeqCst) == STATE_REGISTERED
+        self.entry.state.fetch_or(0, SeqCst) == STATE_REGISTERED
     }
 
     pub(crate) fn is_pending(&self) -> bool {
-        self.inner.state.fetch_or(0, SeqCst) == STATE_PENDING
+        self.entry.state.fetch_or(0, SeqCst) == STATE_PENDING
     }
 
     pub(crate) fn is_woken_up(&self) -> bool {
-        self.inner.state.fetch_or(0, SeqCst) == STATE_WOKEN_UP
+        self.entry.state.fetch_or(0, SeqCst) == STATE_WOKEN_UP
     }
 
     pub(crate) fn as_raw(&self) -> RawHandle {
-        RawHandle { ptr: self.ptr }
-    }
-
-    pub(crate) fn as_entry_ptr(&self) -> NonNull<Entry> {
-        self.ptr
-    }
-
-    /// # Safety
-    ///
-    /// [`Self::ptr`] must be a valid pointer to an [`Entry`].
-    pub(crate) unsafe fn drop_entry(&self) {
-        drop(Box::from_raw(self.ptr.as_ptr()));
+        // Since `RawHandle` doesn't own the `Entry`,
+        // we don't need to increase the reference count here.
+        let weak = Arc::downgrade(&self.entry);
+        // Safety: `Arc::as_ptr` always returns a valid pointer
+        let ptr = unsafe { NonNull::new_unchecked(weak.into_raw().cast_mut()) };
+        RawHandle { ptr }
     }
 }

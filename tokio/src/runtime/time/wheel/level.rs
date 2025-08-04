@@ -131,7 +131,7 @@ impl Level {
     pub(crate) unsafe fn remove_entry(&mut self, hdl: EntryHandle) {
         let slot = slot_for(hdl.deadline(), self.level);
 
-        unsafe { self.slot[slot].remove(hdl.as_entry_ptr()) };
+        unsafe { self.slot[slot].remove(hdl.as_raw().as_entry_ptr()) };
         if self.slot[slot].is_empty() {
             // The bit is currently set
             debug_assert!(self.occupied & occupied_bit(slot) != 0);

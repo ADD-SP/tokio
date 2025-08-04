@@ -90,10 +90,6 @@ impl Wheel {
         let deadline = hdl.deadline();
 
         if deadline <= self.elapsed {
-            // Safety: caller guarantees that the entry is valid.
-            unsafe {
-                hdl.drop_entry();
-            }
             return false;
         }
 
@@ -125,12 +121,7 @@ impl Wheel {
     /// * AND the entry is already registered in the wheel.
     pub(crate) unsafe fn remove(&mut self, hdl: EntryHandle) {
         if hdl.is_pending() {
-            self.pending.remove(hdl.as_entry_ptr());
-            // Safety: the entry is still valid as it was just popped
-            // from the pending list.
-            unsafe {
-                hdl.drop_entry();
-            }
+            self.pending.remove(hdl.as_raw().as_entry_ptr());
         } else {
             let deadline = hdl.deadline();
             debug_assert!(
@@ -142,11 +133,6 @@ impl Wheel {
 
             let level = self.level_for(deadline);
             self.levels[level].remove_entry(hdl.clone());
-            // Safety: the entry is still valid as it was just popped
-            // from the pending list.
-            unsafe {
-                hdl.drop_entry();
-            }
         }
     }
 
@@ -157,11 +143,6 @@ impl Wheel {
                 // Safety: the entry is still valid as it was just popped
                 // from the pending list.
                 let hdl = unsafe { raw_hdl.upgrade() };
-                // Safety: the entry is still valid as it was just popped
-                // from the pending list.
-                unsafe {
-                    hdl.drop_entry();
-                }
                 return Some(hdl);
             }
 
@@ -185,13 +166,7 @@ impl Wheel {
         self.pending.pop_back().map(|raw_hdl| {
             // Safety: the entry is still valid as it was just popped
             // from the pending list.
-            let hdl = unsafe { raw_hdl.upgrade() };
-            // Safety: the entry is still valid as it was just popped
-            // from the pending list.
-            unsafe {
-                hdl.drop_entry();
-            }
-            hdl
+            unsafe { raw_hdl.upgrade() }
         })
     }
 
