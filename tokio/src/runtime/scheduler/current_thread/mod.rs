@@ -24,7 +24,7 @@ use std::{fmt, thread};
 
 cfg_time! {
     use crate::runtime::scheduler::util;
-    use crate::runtime::time::{EntryHandle, Wheel, cancellation_queue};
+    use crate::runtime::time::EntryHandle;
     use crate::loom::sync::Mutex;
 }
 
@@ -61,24 +61,16 @@ pub(crate) struct Handle {
 
 /// Data required for executing the scheduler. The struct is passed around to
 /// a function that will perform the scheduling work and acts as a capability token.
-struct Core {
+pub(in crate::runtime::scheduler) struct Core {
     /// Scheduler run queue
     tasks: VecDeque<Notified>,
 
     /// Current tick
     tick: u32,
 
+    /// Local timer context.
     #[cfg(feature = "time")]
-    /// Worker local timer wheel
-    wheel: Wheel,
-
-    #[cfg(feature = "time")]
-    /// Channel for sending timers that need to be cancelled
-    timer_cancel_tx: cancellation_queue::Sender,
-
-    #[cfg(feature = "time")]
-    /// Channel for receiving timers that need to be cancelled
-    timer_cancel_rx: cancellation_queue::Receiver,
+    pub(crate) time_context: crate::runtime::time::Context2,
 
     /// Runtime driver
     ///
@@ -135,7 +127,7 @@ pub(crate) struct Context {
 
     /// Scheduler core, enabling the holder of `Context` to execute the
     /// scheduler.
-    core: RefCell<Option<Box<Core>>>,
+    pub(in crate::runtime::scheduler) core: RefCell<Option<Box<Core>>>,
 
     /// Deferred tasks, usually ones that called `task::yield_now()`.
     pub(crate) defer: Defer,
@@ -194,17 +186,11 @@ impl CurrentThread {
             local_tid,
         });
 
-        #[cfg(feature = "time")]
-        let (timer_cancel_tx, timer_cancel_rx) = cancellation_queue::new();
         let core = AtomicCell::new(Some(Box::new(Core {
             tasks: VecDeque::with_capacity(INITIAL_CAPACITY),
             tick: 0,
             #[cfg(feature = "time")]
-            wheel: Wheel::new(),
-            #[cfg(feature = "time")]
-            timer_cancel_tx,
-            #[cfg(feature = "time")]
-            timer_cancel_rx,
+            time_context: crate::runtime::time::Context2::new(),
             driver: Some(driver),
             metrics: MetricsBatch::new(&handle.shared.worker_metrics),
             global_queue_interval,
@@ -317,9 +303,7 @@ fn shutdown2(mut core: Box<Core>, handle: &Handle) -> Box<Core> {
 
     #[cfg(feature = "time")]
     util::time::shutdown_local_timers(
-        &mut core.wheel,
-        &core.timer_cancel_tx,
-        &mut core.timer_cancel_rx,
+        &mut core.time_context,
         handle.take_remote_timers(),
         &handle.driver,
     );
@@ -474,17 +458,13 @@ impl Context {
 
         #[cfg(feature = "time")]
         let (core, duration, maybe_advance_duration) = {
-            // declare as mutable to avoid compiler warning,
-            // otherwise the compiler will complain that the `core` parameter does not need to be mutable
-            // if the 'time' feature is not enabled.
-            let mut core = core;
-            util::time::remove_cancelled_timers(&mut core.wheel, &mut core.timer_cancel_rx);
-            let should_yield = util::time::insert_inject_timers(
-                &mut core.wheel,
-                &core.timer_cancel_tx,
-                handle.take_remote_timers(),
-            );
-            let next_timer = util::time::next_expiration_time(&core.wheel, &handle.driver);
+            let (core, (should_yield, next_timer)) = self.enter(core, || {
+                util::time::remove_cancelled_timers();
+                let should_yield = util::time::insert_inject_timers(handle.take_remote_timers());
+                let next_timer = util::time::next_expiration_time(&handle.driver);
+                (should_yield, next_timer)
+            });
+
             if should_yield {
                 (core, Some(Duration::from_millis(0)), None)
             } else {
@@ -513,21 +493,10 @@ impl Context {
         self.defer.wake();
 
         #[cfg(feature = "time")]
-        let core = {
-            // declare as mutable to avoid compiler warning
-            // error: variable does not need to be mutable
-            //    --> tokio/src/runtime/scheduler/current_thread/mod.rs:497:14
-            //     |
-            // 497 |         let (mut core, ()) = self.enter(core, || {
-            //     |              ----^^^^
-            //     |              |
-            //     |              help: remove this `mut`
-            //     |
-            let mut core = core;
+        let (core, ()) = self.enter(core, || {
             util::time::post_auto_advance(&handle.driver, maybe_advance_duration);
-            util::time::process_expired_timers(&mut core.wheel, &handle.driver);
-            core
-        };
+            util::time::process_expired_timers(&handle.driver);
+        });
 
         core
     }
@@ -566,8 +535,8 @@ impl Context {
             self.with_core(|maybe_core| {
                 match maybe_core {
                     Some(core) => f(Some(crate::runtime::time::Context::Running {
-                        wheel: &mut core.wheel,
-                        canc_tx: &core.timer_cancel_tx,
+                        wheel: &mut core.time_context.wheel,
+                        canc_tx: &core.time_context.canc_tx,
                     })),
                     None => f(None),
                 }

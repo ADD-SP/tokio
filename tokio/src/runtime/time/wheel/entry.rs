@@ -137,7 +137,7 @@ impl Handle {
     }
 
     /// Wake the entry if it is already in the pending queue of the timer wheel.
-    pub(crate) fn wake(&self) {
+    pub(crate) fn take_waker(&self) -> Option<Waker> {
         let mut lock = self.entry.state.lock();
         match &*lock {
             // don't unlock — poisoning the `Mutex` stops others from using the bad state.
@@ -146,26 +146,22 @@ impl Handle {
             }
             State::Pending => {
                 *lock = State::WokenUp;
-                // Since state has been updated, no need to hold the lock.
-                drop(lock);
-                self.entry.waker.wake();
+                Some(self.entry.waker.take_waker().unwrap())
             }
             // don't unlock — poisoning the `Mutex` stops others from using the bad state.
             State::WokenUp => panic!("corrupted state: `State::WokenUp`"),
             // no need to wake up cancelling entry
-            State::Cancelling => (),
+            State::Cancelling => None,
         }
     }
 
     /// Wake the entry if it has already elapsed before registering to the timer wheel.
-    pub(crate) fn wake_unregistered(&self) {
+    pub(crate) fn take_waker_unregistered(&self) -> Option<Waker> {
         let mut lock = self.entry.state.lock();
         match &*lock {
             State::Unregistered => {
                 *lock = State::WokenUp;
-                // Since state has been updated, no need to hold the lock.
-                drop(lock);
-                self.entry.waker.wake();
+                Some(self.entry.waker.take_waker().unwrap())
             }
             // don't unlock — poisoning the `Mutex` stops others from using the bad state.
             state @ (State::Registered(_) | State::WokenUp) => {
@@ -174,11 +170,12 @@ impl Handle {
             // don't unlock — poisoning the `Mutex` stops others from using the bad state.
             State::Pending => panic!("corrupted state: State::Pending"),
             // don't wake up cancelling entries
-            State::Cancelling => (),
+            State::Cancelling => None,
         }
     }
 
     pub(crate) fn register_waker(&self, waker: &Waker) {
+        let mut _lock = self.entry.state.lock();
         self.entry.waker.register_by_ref(waker);
     }
 

@@ -1,4 +1,4 @@
-use crate::runtime::time::{TimeSource, Wheel};
+use crate::runtime::time::TimeSource;
 use std::fmt;
 
 cfg_test_util! {
@@ -21,32 +21,6 @@ pub(crate) struct Handle {
 }
 
 impl Handle {
-    pub(crate) fn process_at_time(&self, wheel: &mut Wheel, mut now: u64) {
-        if now < wheel.elapsed() {
-            // Time went backwards! This normally shouldn't happen as the Rust language
-            // guarantees that an Instant is monotonic, but can happen when running
-            // Linux in a VM on a Windows host due to std incorrectly trusting the
-            // hardware clock to be monotonic.
-            //
-            // See <https://github.com/tokio-rs/tokio/issues/3619> for more information.
-            now = wheel.elapsed();
-        }
-
-        while let Some(hdl) = wheel.poll(now) {
-            unsafe {
-                hdl.wake();
-            }
-        }
-    }
-
-    pub(crate) fn shutdown(&self, wheel: &mut Wheel) {
-        // self.is_shutdown.store(true, Ordering::SeqCst);
-        // Advance time forward to the end of time.
-        // This will ensure that all timers are fired.
-        let max_tick = u64::MAX;
-        self.process_at_time(wheel, max_tick);
-    }
-
     /// Returns the time source associated with this handle.
     pub(crate) fn time_source(&self) -> &TimeSource {
         &self.time_source

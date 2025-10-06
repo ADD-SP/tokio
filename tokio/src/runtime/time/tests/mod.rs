@@ -50,8 +50,11 @@ async fn fire_all_timers(handle: &Handle, exit_rx: oneshot::Receiver<()>) {
         // fire all timers.
         with_current_wheel(&handle.inner, |maybe_wheel| match maybe_wheel {
             Some(TimeContext::Running { wheel, .. }) => {
-                let time = handle.inner.driver().time();
-                time.process_at_time(wheel, u64::MAX);
+                while let Some(hdl) = wheel.poll(u64::MAX) {
+                    if let Some(waker) = hdl.take_waker() {
+                        waker.wake();
+                    }
+                }
             }
             #[cfg(feature = "rt-multi-thread")]
             Some(TimeContext::Shutdown) => panic!("runtime is shutting down"),
@@ -67,8 +70,11 @@ fn process_at_time(handle: &Handle, at: u64) {
     let handle = &handle.inner;
     with_current_wheel(handle, |maybe_wheel| match maybe_wheel {
         Some(TimeContext::Running { wheel, .. }) => {
-            let time = handle.driver().time();
-            time.process_at_time(wheel, at);
+            while let Some(hdl) = wheel.poll(at) {
+                if let Some(waker) = hdl.take_waker() {
+                    waker.wake();
+                }
+            }
         }
         #[cfg(feature = "rt-multi-thread")]
         Some(TimeContext::Shutdown) => panic!("runtime is shutting down"),

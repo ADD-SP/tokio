@@ -29,6 +29,10 @@ impl WakeList {
         self.curr < NUM_WAKERS
     }
 
+    pub(crate) fn is_empty(&self) -> bool {
+        self.curr == 0
+    }
+
     pub(crate) fn push(&mut self, val: Waker) {
         debug_assert!(self.can_push());
 

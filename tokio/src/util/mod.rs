@@ -30,6 +30,7 @@ pub(crate) use wake::{waker, Wake};
     // rt and signal use `Notify`, which requires `WakeList`.
     feature = "rt",
     feature = "signal",
+    feature = "time",
 ))]
 mod wake_list;
 #[cfg(any(
@@ -39,6 +40,7 @@ mod wake_list;
     feature = "fs",
     feature = "rt",
     feature = "signal",
+    feature = "time",
 ))]
 pub(crate) use wake_list::WakeList;
 
