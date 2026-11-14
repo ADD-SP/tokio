@@ -132,7 +132,7 @@ fn internal_interval_at(
     };
 
     Interval {
-        timer_elapsed: false,
+        timer_needs_rearm: false,
         delay: Box::pin(sleep_until(start)),
         period: safe_delay(period),
         missed_tick_behavior: MissedTickBehavior::default(),
@@ -385,8 +385,8 @@ impl Default for MissedTickBehavior {
 /// [`sleep`]: crate::time::sleep()
 #[derive(Debug)]
 pub struct Interval {
-    /// Whether or not the timer is elapsed.
-    timer_elapsed: bool,
+    /// Whether the retained timer needs to be rearmed before the next poll.
+    timer_needs_rearm: bool,
 
     /// Future that completes the next time the `Interval` yields a value.
     delay: Pin<Box<Sleep>>,
@@ -461,7 +461,7 @@ impl Interval {
     pub fn poll_tick(&mut self, cx: &mut Context<'_>) -> Poll<Instant> {
         let scheduled_deadline = self.delay.deadline();
 
-        if self.timer_elapsed {
+        if self.timer_needs_rearm {
             self.reset_at(scheduled_deadline);
         }
 
@@ -484,7 +484,7 @@ impl Interval {
 
         // Defer timer registration until the next call to [`poll_tick`].
         self.delay.as_mut().set_deadline(next_deadline);
-        self.timer_elapsed = true;
+        self.timer_needs_rearm = true;
 
         Poll::Ready(scheduled_deadline)
     }
@@ -620,7 +620,7 @@ impl Interval {
     /// ```
     pub fn reset_at(&mut self, deadline: Instant) {
         self.delay.as_mut().reset(deadline);
-        self.timer_elapsed = false;
+        self.timer_needs_rearm = false;
     }
 
     /// Returns the [`MissedTickBehavior`] strategy currently being used.
